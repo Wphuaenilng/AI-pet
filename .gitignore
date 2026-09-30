@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+*.log
+.DS_Store
+
+# 测试产物 / 一次性产物
+gui-test-screenshots/
+desktop-ai-pet-ui.html
+design-assets/

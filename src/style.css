@@ -1,0 +1,42 @@
+/* 全局样式：桌宠窗口透明，其他窗口奶油暖底 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: transparent;
+  height: 100%;
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body:not(.preview) {
+  background: transparent;
+}
+
+html.preview,
+body.preview {
+  background: linear-gradient(160deg, #f6efe8 0%, #fdf6f0 60%, #f2ebe3 100%) fixed;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #e8d5c9;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 无边框窗口的拖动区域（WebView2 支持 -webkit-app-region） */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}

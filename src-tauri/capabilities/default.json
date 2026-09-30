@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default capability for all app windows",
+  "windows": ["pet", "settings", "chat"],
+  "permissions": ["core:default"]
+}
