@@ -1,5 +1,5 @@
 // 宠物大脑：主循环 / 物理 / 拖拽 / 气泡 / 行为调度 / 事件联动
-import { invoke, emitAll, isTauri, listen, DEFAULT_SETTINGS, type MonitorInfo, type OSWindow, type PetSayPayload, type Settings } from '../lib/tauri'
+import { invoke, emitAll, isTauri, listen, DEFAULT_SETTINGS, type MonitorInfo, type OSWindow, type PetSayPayload, type Settings, type Species } from '../lib/tauri'
 import { Planner } from '../behavior/behaviors/planner'
 import {
   ApproachAndSpeakGoal,
@@ -24,9 +24,11 @@ import { PetAnimation } from './PetAnimation'
 import { PetRenderer } from './PetRenderer'
 import { EmotionSystem } from './PetState'
 
-export const PET_W = 280
+export const PET_W = 560 // 加宽是为了给气泡留位置，见 pushBubble / .bubble 的 max-width
 export const PET_H = 340
 const PAD_BOTTOM = 8 // css px，脚底离窗口底部
+/** 脚底到头顶的可视高度（窗口内像素）：命中判定与气泡锚点共用，避免两处各写一个魔数 */
+const PET_HEAD_ROOM = 185
 const GRAVITY = 1750 // css px/s^2
 
 interface PetBody {
@@ -35,13 +37,18 @@ interface PetBody {
   facing: 1 | -1
   vy: number
   airborne: boolean
-  support: { kind: 'floor' | 'window'; id: number } | null
+  support: { kind: 'floor' | 'window' | 'float'; id: number } | null
 }
 
 export interface BubbleState {
   visible: boolean
   text: string
+  /** 气泡底边距窗口底边的 CSS 像素：贴着头顶，不随窗口大小固定在顶部 */
+  bottom: number
 }
+
+/** 右键自定义菜单的显示位置（画布内 CSS 像素），null 表示关闭 */
+export type PetMenuState = { x: number; y: number } | null
 
 export class PetBrain {
   fsm = new StateMachine()
@@ -51,7 +58,7 @@ export class PetBrain {
   settings: Settings
   pet: PetBody = { x: 0, feetY: 0, facing: 1, vy: 0, airborne: false, support: null }
 
-  bubble: BubbleState = { visible: false, text: '' }
+  bubble: BubbleState = { visible: false, text: '', bottom: 0 }
   paused = false
 
   private renderer: PetRenderer
@@ -92,6 +99,7 @@ export class PetBrain {
   private posDirty = false
   private posInFlight = false
   private interactive = true
+  private menuOpen = false
   private proactiveT = 0
   private lastProactive = 0
   private emotionEmitT = 0
@@ -103,6 +111,7 @@ export class PetBrain {
     private canvas: HTMLCanvasElement,
     private onBubble: (b: BubbleState) => void,
     private onStateChange?: (s: PetFsmState) => void,
+    private onMenu?: (m: PetMenuState) => void,
   ) {
     this.renderer = new PetRenderer(canvas)
     this.world = new World(!isTauri)
@@ -228,19 +237,28 @@ export class PetBrain {
       await listen<Settings>('settings://updated', (s) => this.applySettings(s)),
     )
 
-    // 4. 画布鼠标事件（拖拽 / 点摸 / 双击聊天）
+    // 4. 画布鼠标事件（拖拽 / 点摸 / 双击聊天 / 右键自定义菜单）
     const onPointerDown = (e: PointerEvent) => this.onPointerDown(e)
     const onPointerUp = () => this.onPointerUp()
     const onDblClick = () => {
       if (isTauri) void invoke('show_window', { label: 'chat' }).catch(() => {})
     }
+    // 拦掉 WebView2 自带菜单（"复制图像"那一套），换成宠物自己的菜单。
+    // 挂在 window 上：气泡等 DOM 覆盖层也要被覆盖到，否则右键气泡仍弹原生菜单
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault()
+      this.openMenu(e.clientX, e.clientY)
+    }
     this.canvas.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('pointerup', onPointerUp)
     this.canvas.addEventListener('dblclick', onDblClick)
+    window.addEventListener('contextmenu', onContextMenu)
     this.unlistens.push(
       () => this.canvas.removeEventListener('pointerdown', onPointerDown),
       () => window.removeEventListener('pointerup', onPointerUp),
       () => this.canvas.removeEventListener('dblclick', onDblClick),
+      () => window.removeEventListener('contextmenu', onContextMenu),
+      () => this.onMenu?.(null),
     )
 
     // 5. 初始行为：从屏幕边走进来
@@ -326,8 +344,8 @@ export class PetBrain {
 
     // 气泡队列
     if (this.bubble.visible && t > this.bubbleUntil) {
-      this.bubble = { visible: false, text: '' }
-      this.onBubble(this.bubble)
+      this.bubble = { visible: false, text: '', bottom: 0 }
+      this.pushBubble()
       if (this.fsm.current === 'TALK') this.setPose('IDLE')
     }
     if (!this.bubble.visible && this.bubbleQueue.length > 0) {
@@ -462,9 +480,26 @@ export class PetBrain {
     this.fsm.force('FALL', this.now())
   }
 
+  /** 松手即停在原地：把当前高度当立足点，不再自由落体回地板 */
+  private settleHere(): void {
+    const p = this.pet
+    p.airborne = false
+    p.vy = 0
+    p.support = { kind: 'float', id: 0 }
+    this.supportRect = { x: p.x, y: p.feetY, w: 0, h: 0 }
+    this.fsm.set('IDLE', this.now()) || this.fsm.force('IDLE', this.now())
+    this.markPosDirty()
+  }
+
   private checkSupport(dt: number): void {
     const p = this.pet
     if (p.airborne) return
+    if (p.support?.kind === 'float') {
+      // 悬停不需要找表面；只有显示器/分辨率变了才重新掉一次找落脚处
+      const m = this.world.monitorAt(p.x)
+      if (!m || p.feetY > this.world.floorOf(m) + 4 || p.feetY < m.y - 4) this.startFall()
+      return
+    }
     if (p.support?.kind === 'window') {
       const w = this.world.windowById(p.support.id)
       if (!w) {
@@ -525,23 +560,27 @@ export class PetBrain {
       this.speedNow = 0
       return 'blocked'
     }
-    const sup = this.world.surfaceAt(nx, p.feetY, 6 * u)
-    if (!sup) {
-      // 尝试小台阶（≤34css 高的窗口顶）
-      const stepUp = this.world.windowTopNear(nx, p.feetY - 34 * u, p.feetY - 4)
-      if (stepUp) {
-        p.feetY = stepUp.top
-        p.support = { kind: stepUp.kind, id: stepUp.id }
-        this.supportRect = { x: stepUp.left, y: stepUp.top, w: stepUp.right - stepUp.left, h: 0 }
-      } else {
-        p.facing = (-dir as 1 | -1)
-        this.speedNow = 0
-        return 'blocked'
-      }
+    if (p.support?.kind === 'float') {
+      // 悬停：当前高度就是立足点，不做表面探测（否则脚下无物会被判 blocked 走不动）
     } else {
-      p.support = { kind: sup.kind, id: sup.id }
-      if (sup.kind === 'window') {
-        this.supportRect = { x: sup.left, y: sup.top, w: sup.right - sup.left, h: 0 }
+      const sup = this.world.surfaceAt(nx, p.feetY, 6 * u)
+      if (!sup) {
+        // 尝试小台阶（≤34css 高的窗口顶）
+        const stepUp = this.world.windowTopNear(nx, p.feetY - 34 * u, p.feetY - 4)
+        if (stepUp) {
+          p.feetY = stepUp.top
+          p.support = { kind: stepUp.kind, id: stepUp.id }
+          this.supportRect = { x: stepUp.left, y: stepUp.top, w: stepUp.right - stepUp.left, h: 0 }
+        } else {
+          p.facing = (-dir as 1 | -1)
+          this.speedNow = 0
+          return 'blocked'
+        }
+      } else {
+        p.support = { kind: sup.kind, id: sup.id }
+        if (sup.kind === 'window') {
+          this.supportRect = { x: sup.left, y: sup.top, w: sup.right - sup.left, h: 0 }
+        }
       }
     }
     p.x = nx
@@ -710,12 +749,24 @@ export class PetBrain {
     if (this.bubbleQueue.length > 2) this.bubbleQueue.shift()
   }
 
+  /** 脚底到头顶的高度：dot 只是半径 34u 的球，动物形态还得算上耳朵 */
+  private headRoom(): number {
+    return (this.settings.species === 'dot' ? 68 : PET_HEAD_ROOM) * this.u
+  }
+
+  /** 气泡底边贴着头顶算：窗口几何是物理像素、DOM 是 CSS 像素，按 dpr 折算 */
+  private pushBubble(): void {
+    const dpr = this.dpr > 0 ? this.dpr : 1
+    const bottom = Math.max(0, (PAD_BOTTOM * this.u + this.headRoom()) / dpr) + 24
+    this.onBubble({ ...this.bubble, bottom })
+  }
+
   private showNextBubble(t: number): void {
     const item = this.bubbleQueue.shift()
     if (!item) return
-    this.bubble = { visible: true, text: item.text }
+    this.bubble = { visible: true, text: item.text, bottom: 0 }
     this.bubbleUntil = t + Math.max(2400, Math.min(9000, 1500 + item.text.length * 170))
-    this.onBubble(this.bubble)
+    this.pushBubble()
 
     if (item.fromChat) {
       this.emotion.onChat(item.emotion ?? 'neutral')
@@ -742,6 +793,8 @@ export class PetBrain {
   // ---------- 鼠标交互 ----------
 
   private onPointerDown(e: PointerEvent): void {
+    if (e.button !== 0) return // 右键交给 contextmenu 处理，别误判成拖拽
+    this.closeMenu()
     if (this.dragging) return
     const c = this.world.cursor
     this.dragging = true
@@ -770,10 +823,20 @@ export class PetBrain {
       this.dragSaid = true
       this.say(this.pickCanned('dragged'))
     }
-    this.winX = c.x - this.grabOffset.x
-    this.winY = c.y - this.grabOffset.y
-    this.pet.x = this.winX + this.winW / 2
-    this.pet.feetY = this.winY + this.winH - PAD_BOTTOM * this.u
+    // 拖到哪停到哪：把脚底钳在本屏工作区内（可以拖到屏幕顶端，但不会拖出屏外）
+    const m = this.world.monitorAt(c.x) ?? this.world.monitors.find((x) => x.primary) ?? null
+    let px = c.x - this.grabOffset.x + this.winW / 2
+    let py = c.y - this.grabOffset.y + this.winH - PAD_BOTTOM * this.u
+    if (m) {
+      const u = this.u
+      // 用整块屏幕的矩形钳位（不是工作区），这样能拖到最顶端、也能压在任务栏上沿
+      px = Math.max(m.x + 20 * u, Math.min(m.x + m.w - 20 * u, px))
+      py = Math.max(m.y + 24 * u, Math.min(this.world.floorOf(m), py))
+    }
+    this.pet.x = px
+    this.pet.feetY = py
+    this.winX = px - this.winW / 2
+    this.winY = py - this.winH + PAD_BOTTOM * this.u
     this.markPosDirty()
     // 松手检测（轮询兜底，防止 pointerup 丢失）
     if (isTauri && !this.world.cursorLeftDown && performance.now() - this.dragStart.t > 150) {
@@ -800,7 +863,7 @@ export class PetBrain {
     }
     this.emotion.onDragEnd()
     this.say(this.pickCanned('dropped'))
-    this.startFall()
+    this.settleHere()
     void emitAll('pet://memory-event', '被用户拎起来又放下')
   }
 
@@ -817,6 +880,25 @@ export class PetBrain {
     void emitAll('pet://memory-event', '被用户摸了摸')
   }
 
+  /** 右键菜单：位置是画布内 CSS 像素，夹在窗口范围内免得被裁掉 */
+  openMenu(x: number, y: number): void {
+    const w = this.canvas.clientWidth || 200
+    const h = this.canvas.clientHeight || 200
+    this.menuOpen = true
+    // 立刻把窗口从穿透态捞回来：菜单要能被点到，不能等下一帧的命中判定
+    if (!this.interactive) {
+      this.interactive = true
+      if (isTauri) void invoke('set_pet_ignore_cursor_events', { ignore: false }).catch(() => {})
+    }
+    this.onMenu?.({ x: Math.max(4, Math.min(x, w - 96)), y: Math.max(4, Math.min(y, h - 70)) })
+  }
+
+  closeMenu(): void {
+    if (!this.menuOpen) return
+    this.menuOpen = false
+    this.onMenu?.(null)
+  }
+
   private updateHitTest(): void {
     if (!isTauri) return
     const c = this.world.cursor
@@ -825,9 +907,12 @@ export class PetBrain {
     const u = this.u
     const cx = this.winW / 2
     const feet = this.winH - PAD_BOTTOM * u
+    // dot 只有一颗球，命中框按球来算，别沿用动物形态那 90u 宽、185u 高
+    const halfW = (this.settings.species === 'dot' ? 40 : 90) * u
     const hit =
       this.dragging ||
-      (lx > cx - 90 * u && lx < cx + 90 * u && ly > feet - 185 * u && ly < feet + 6 * u)
+      this.menuOpen ||
+      (lx > cx - halfW && lx < cx + halfW && ly > feet - this.headRoom() && ly < feet + 6 * u)
     if (hit !== this.interactive) {
       this.interactive = hit
       void invoke('set_pet_ignore_cursor_events', { ignore: !hit }).catch(() => {})
@@ -851,7 +936,6 @@ export class PetBrain {
       return
     }
     if (!this.posDirty) return
-    this.posDirty = false
     if (this.posInFlight) return
     this.posInFlight = true
     const send = async () => {
@@ -899,7 +983,7 @@ export class PetBrain {
   }
 
   changeSpecies(): void {
-    const order = ['cat', 'bunny', 'fox'] as const
+    const order: Species[] = ['cat', 'bunny', 'fox', 'dot']
     const idx = order.indexOf(this.settings.species)
     const next = order[(idx + 1) % order.length]
     this.applySettings({ ...this.settings, species: next })
@@ -907,9 +991,14 @@ export class PetBrain {
     // 变身特效
     this.anim.burst('sparkle', 8)
     this.emotion.setTransient('surprised', 1200, this.now())
-    this.say(
-      next === 'cat' ? '变成小橘猫啦～' : next === 'bunny' ? '变身小白兔！' : '狐狸模式，启动。',
-    )
+    // Record<Species, …>：将来加形态时漏台词会直接编译不过
+    const line: Record<Species, string> = {
+      cat: '变成小橘猫啦～',
+      bunny: '变身小白兔！',
+      fox: '狐狸模式，启动。',
+      dot: '噗，我变成一颗黑豆了。',
+    }
+    this.say(line[next])
     this.setPose('HAPPY')
     this.setGoal(new HappyGoal(this, 1.4))
   }

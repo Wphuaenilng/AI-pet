@@ -1,5 +1,7 @@
 // 宠物渲染器：纯 Canvas 程序化绘制，无外部素材依赖
-export type Species = 'cat' | 'bunny' | 'fox'
+// Species 唯一定义在 lib/tauri.ts，此处转出供旧引用（PetAnimation）继续使用
+import type { Species } from '../lib/tauri'
+export type { Species }
 export type PoseKind = 'stand' | 'walk' | 'sit' | 'lay' | 'sleep' | 'hang' | 'jump'
 export type EyeState = 'open' | 'happy' | 'closed' | 'surprised' | 'angry' | 'sad' | 'sleepy' | 'wink'
 export type MouthKind = 'smile' | 'cat' | 'open' | 'o' | 'frown' | 'flat'
@@ -8,6 +10,8 @@ export interface Face {
   eyes: EyeState
   eyeDX: number // -1..1
   eyeDY: number
+  pupilDX: number // 滞后一阶的眼珠偏移，dot 靠它做"慢半拍"的呆萌感
+  pupilDY: number
   mouth: MouthKind
   blush: number // 0..1
   talk: number // 说话张嘴 0..1
@@ -51,10 +55,15 @@ interface Palette {
   nose: string
 }
 
+const DOT_WHITE = '#FFFFFF'
+const DOT_TEAR = '#9BD4FF'
+
 const PAL: Record<Species, Palette> = {
   cat: { fur: '#FFB05C', furDark: '#E8903A', outline: '#8A5522', belly: '#FFE9C4', ear: '#FFB3C1', cheek: '#FFC7CF', nose: '#F27D9B' },
   bunny: { fur: '#F1ECFA', furDark: '#D5C9EE', outline: '#7A6B9E', belly: '#FFFFFF', ear: '#FFC9D6', cheek: '#FFCBD4', nose: '#F27D9B' },
   fox: { fur: '#FF9A4D', furDark: '#E07B2E', outline: '#7C4218', belly: '#FFF3E0', ear: '#FFD9C2', cheek: '#FFC0A8', nose: '#8A5522' },
+  // dot：fur 是球体本色，outline 反过来用作亮色 rim（深色壁纸上纯黑轮廓会消失），belly 是顶部高光
+  dot: { fur: '#16181D', furDark: '#0B0C0F', outline: 'rgba(255,255,255,0.16)', belly: '#2B3038', ear: '#000000', cheek: '#FF8AA0', nose: '#FFFFFF' },
 }
 
 export class PetRenderer {
@@ -79,6 +88,13 @@ export class PetRenderer {
     const u = p.u
     const s = p.facing
     const pal = PAL[p.species]
+
+    // 黑点是一颗没有耳/尾/四肢的球，几何与三种动物完全不同，单独成一条渲染路径
+    if (p.species === 'dot') {
+      this.drawDot(p, pal)
+      this.drawParticles(p)
+      return
+    }
 
     // 落地挤压的整体形变
     ctx.save()
@@ -220,6 +236,274 @@ export class PetRenderer {
 
   private paw(x: number, y: number, r: number, pal: Palette): void {
     this.ellipse(x, y, r, r * 0.8, true, true, pal.fur, pal.outline)
+  }
+
+  /**
+   * 小黑点：形变（squash & stretch）就是它的全部表演，五官随球体一起压扁。
+   * 所有绘制都在"以脚底为锚点的缩放"内部完成，因此挤压时眼睛也会跟着变形。
+   */
+  private drawDot(p: Pose, pal: Palette): void {
+    const ctx = this.ctx
+    const u = p.u
+    const R = 34 * u
+    const sq = Math.min(1, p.squash)
+
+    let sx = 1
+    let lift = 0
+    switch (p.pose) {
+      case 'walk': {
+        const hop = Math.abs(Math.sin(p.walkPhase))
+        lift = -hop * 6 * u
+        sx = 1 - hop * 0.07
+        break
+      }
+      case 'sit':
+        sx = 1.14
+        break
+      case 'lay':
+      case 'sleep':
+        sx = 1.34
+        break
+      case 'hang':
+        sx = 0.82
+        break
+      case 'jump':
+        sx = 0.87
+        break
+      default: {
+        const br = Math.sin(p.breathe)
+        sx = 1 - br * 0.018
+        lift = -Math.abs(br) * 1.2 * u
+      }
+    }
+    // 体积守恒：横向压多少纵向就涨多少，落地挤压再叠一层
+    let sy = 1 / sx
+    sx *= 1 + 0.18 * sq
+    sy *= 1 - 0.22 * sq
+
+    const cy = p.feetY - R + lift
+    ctx.save()
+    ctx.translate(p.cx, p.feetY)
+    ctx.rotate(p.headTilt * 0.6 + (p.pose === 'walk' ? Math.sin(p.walkPhase) * 0.05 : 0))
+    ctx.scale(sx, sy)
+    ctx.translate(-p.cx, -p.feetY)
+
+    ctx.beginPath()
+    ctx.ellipse(p.cx, cy, R, R, 0, 0, Math.PI * 2)
+    ctx.fillStyle = pal.fur
+    ctx.fill()
+    ctx.lineWidth = 1.6 * u
+    ctx.strokeStyle = pal.outline
+    ctx.stroke()
+
+    // 顶部高光：让球体有体积，不至于看成一张黑纸片
+    ctx.globalAlpha = 0.45
+    ctx.fillStyle = pal.belly
+    ctx.beginPath()
+    ctx.ellipse(p.cx - R * 0.26, cy - R * 0.52, R * 0.36, R * 0.19, -0.5, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+
+    this.drawDotFace(p, pal, cy, R)
+    ctx.restore()
+  }
+
+  private drawDotFace(p: Pose, pal: Palette, cy: number, R: number): void {
+    const ctx = this.ctx
+    const u = p.u
+    const f = p.face
+    const shift = p.facing * 2 * u
+    const cx = p.cx + shift
+    const ex = 13 * u
+    const ey = cy - 4 * u
+    const erx = 8.5 * u
+    const ery = 10.5 * u
+    const pdx = f.pupilDX * 3.4 * u
+    const pdy = f.pupilDY * 2.8 * u
+    const blinking = p.eyeClosed > 0.82
+
+    /** 上眼皮：用球体本色盖住眼睛上半，做出生气/困倦/垂眼的裁切（inner 指靠鼻子那侧） */
+    const lid = (x: number, side: -1 | 1, innerY: number, outerY: number) => {
+      const w = erx * 1.25
+      const ix = x - side * w
+      const ox = x + side * w
+      ctx.fillStyle = pal.fur
+      ctx.beginPath()
+      ctx.moveTo(ix, ey - ery * 1.3)
+      ctx.lineTo(ox, ey - ery * 1.3)
+      ctx.lineTo(ox, outerY)
+      ctx.lineTo(ix, innerY)
+      ctx.closePath()
+      ctx.fill()
+    }
+
+    const eye = (side: -1 | 1) => {
+      const x = cx + side * ex
+      const kind: EyeState = f.eyes === 'wink' ? (side === p.facing ? 'closed' : 'open') : f.eyes
+
+      if (blinking && (kind === 'open' || kind === 'surprised' || kind === 'sad' || kind === 'sleepy')) {
+        ctx.strokeStyle = DOT_WHITE
+        ctx.lineWidth = 2.6 * u
+        ctx.lineCap = 'round'
+        ctx.beginPath()
+        ctx.moveTo(x - erx * 0.8, ey)
+        ctx.quadraticCurveTo(x, ey + ery * 0.5, x + erx * 0.8, ey)
+        ctx.stroke()
+        return
+      }
+
+      switch (kind) {
+        case 'happy': {
+          ctx.strokeStyle = DOT_WHITE
+          ctx.lineWidth = 3.2 * u
+          ctx.lineCap = 'round'
+          ctx.beginPath()
+          ctx.arc(x, ey + 3.5 * u, erx * 0.95, Math.PI * 1.15, Math.PI * 1.85)
+          ctx.stroke()
+          return
+        }
+        case 'closed': {
+          ctx.strokeStyle = DOT_WHITE
+          ctx.lineWidth = 2.8 * u
+          ctx.lineCap = 'round'
+          ctx.beginPath()
+          ctx.arc(x, ey - 2.5 * u, erx * 0.95, Math.PI * 0.15, Math.PI * 0.85)
+          ctx.stroke()
+          return
+        }
+        case 'surprised': {
+          ctx.fillStyle = DOT_WHITE
+          ctx.beginPath()
+          ctx.ellipse(x, ey, erx * 1.18, ery * 1.18, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = pal.furDark
+          ctx.beginPath()
+          ctx.arc(x + pdx * 0.5, ey + pdy * 0.5, 2.6 * u, 0, Math.PI * 2)
+          ctx.fill()
+          return
+        }
+        case 'angry': {
+          ctx.fillStyle = DOT_WHITE
+          ctx.beginPath()
+          ctx.ellipse(x, ey + 1 * u, erx * 0.95, ery * 0.8, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = pal.furDark
+          ctx.beginPath()
+          ctx.arc(x + pdx, ey + 2 * u + pdy * 0.5, 3.2 * u, 0, Math.PI * 2)
+          ctx.fill()
+          // 内侧低、外侧高的斜眼皮 = 皱眉
+          lid(x, side, ey - 1 * u, ey - 6.5 * u)
+          return
+        }
+        case 'sad': {
+          ctx.fillStyle = DOT_WHITE
+          ctx.beginPath()
+          ctx.ellipse(x, ey + 1.5 * u, erx * 0.9, ery * 0.95, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = pal.furDark
+          ctx.beginPath()
+          ctx.arc(x + pdx * 0.6, ey + 3 * u + pdy * 0.6, 3.2 * u, 0, Math.PI * 2)
+          ctx.fill()
+          // 内侧高、外侧低 = 八字眉，比 sad 更"委屈"
+          lid(x, side, ey - 7 * u, ey - 2.5 * u)
+          ctx.fillStyle = DOT_TEAR
+          ctx.beginPath()
+          ctx.ellipse(x + side * erx * 0.9, ey + ery * 0.85, 2.2 * u, 3 * u, 0, 0, Math.PI * 2)
+          ctx.fill()
+          return
+        }
+        case 'sleepy': {
+          ctx.fillStyle = DOT_WHITE
+          ctx.beginPath()
+          ctx.ellipse(x, ey + 2.5 * u, erx * 0.95, ery * 0.7, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = pal.furDark
+          ctx.beginPath()
+          ctx.arc(x + pdx * 0.5, ey + 4 * u, 3 * u, 0, Math.PI * 2)
+          ctx.fill()
+          lid(x, side, ey - 1.5 * u, ey - 1.5 * u)
+          return
+        }
+        default: {
+          ctx.fillStyle = DOT_WHITE
+          ctx.beginPath()
+          ctx.ellipse(x, ey, erx, ery, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = pal.furDark
+          ctx.beginPath()
+          ctx.arc(x + pdx, ey + pdy, 3.6 * u, 0, Math.PI * 2)
+          ctx.fill()
+          // 眼珠里点一颗反光，白眼黑瞳容易看成死鱼眼
+          ctx.fillStyle = DOT_WHITE
+          ctx.beginPath()
+          ctx.arc(x + pdx - 1.1 * u, ey + pdy - 1.3 * u, 1.1 * u, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+    }
+
+    eye(-1)
+    eye(1)
+
+    // 腮红
+    if (f.blush > 0) {
+      ctx.globalAlpha = 0.2 + f.blush * 0.35
+      ctx.fillStyle = pal.cheek
+      ctx.beginPath()
+      ctx.ellipse(cx - 22 * u, cy + 7 * u, 6 * u, 3.6 * u, 0, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.beginPath()
+      ctx.ellipse(cx + 22 * u, cy + 7 * u, 6 * u, 3.6 * u, 0, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+
+    // 嘴：黑底上用白色描线，空心比实心更透气
+    const my = cy + R * 0.42
+    ctx.strokeStyle = DOT_WHITE
+    ctx.lineWidth = 2.4 * u
+    ctx.lineCap = 'round'
+    switch (f.mouth) {
+      case 'open': {
+        ctx.beginPath()
+        ctx.ellipse(cx, my, 5.4 * u, (2.6 + (f.talk > 0.45 ? 4.4 : 1)) * u, 0, 0, Math.PI * 2)
+        ctx.stroke()
+        break
+      }
+      case 'o': {
+        ctx.beginPath()
+        ctx.arc(cx, my, 4.2 * u, 0, Math.PI * 2)
+        ctx.stroke()
+        break
+      }
+      case 'smile': {
+        ctx.beginPath()
+        ctx.arc(cx, my - 1.5 * u, 5.6 * u, Math.PI * 0.15, Math.PI * 0.85)
+        ctx.stroke()
+        break
+      }
+      case 'frown': {
+        ctx.beginPath()
+        ctx.arc(cx, my + 5 * u, 5.6 * u, Math.PI * 1.15, Math.PI * 1.85)
+        ctx.stroke()
+        break
+      }
+      case 'cat': {
+        ctx.beginPath()
+        ctx.arc(cx - 3.4 * u, my - 1 * u, 3.4 * u, Math.PI * 0.1, Math.PI * 0.9)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.arc(cx + 3.4 * u, my - 1 * u, 3.4 * u, Math.PI * 0.1, Math.PI * 0.9)
+        ctx.stroke()
+        break
+      }
+      default: {
+        ctx.beginPath()
+        ctx.moveTo(cx - 4.6 * u, my)
+        ctx.lineTo(cx + 4.6 * u, my)
+        ctx.stroke()
+      }
+    }
   }
 
   private drawTail(p: Pose, pal: Palette, by: number, bodyRx: number, bodyRy: number): void {

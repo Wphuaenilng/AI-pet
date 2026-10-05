@@ -12,6 +12,8 @@ export class PetAnimation {
   eyeClosed = 0
   headTilt = 0
   particles: Particle[] = []
+  private pupilDX = 0
+  private pupilDY = 0
   private blinkIn = 2 + Math.random() * 2
   private blinkT = 0
   private zzzCd = 0
@@ -120,7 +122,16 @@ export class PetAnimation {
       mouth = 'open'
     }
 
-    return { eyes, eyeDX: input.eyeDX, eyeDY: input.eyeDY, mouth, blush, talk: input.talking ? 1 : 0 }
+    return {
+      eyes,
+      eyeDX: input.eyeDX,
+      eyeDY: input.eyeDY,
+      pupilDX: this.pupilDX,
+      pupilDY: this.pupilDY,
+      mouth,
+      blush,
+      talk: input.talking ? 1 : 0,
+    }
   }
 
   update(
@@ -141,6 +152,9 @@ export class PetAnimation {
     if (input.moving) this.walkPhase += dt * (input.speed > 150 ? 13 : 8.5)
     this.squash = Math.max(0, this.squash - dt * 3.2)
     this.headTilt += (input.headTiltTarget - this.headTilt) * Math.min(1, dt * 8)
+    // 眼珠比头/身体慢半拍：黑点没有四肢，这点滞后几乎是它唯一的"视线表情"
+    this.pupilDX += (input.eyeDX - this.pupilDX) * Math.min(1, dt * 6)
+    this.pupilDY += (input.eyeDY - this.pupilDY) * Math.min(1, dt * 6)
 
     // 眨眼
     if (input.state === 'SLEEP') {

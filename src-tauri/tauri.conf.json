@@ -15,7 +15,7 @@
       {
         "label": "pet",
         "title": "Desktop AI Pet",
-        "width": 280,
+        "width": 560,
         "height": 340,
         "transparent": true,
         "decorations": false,
@@ -35,7 +35,7 @@
         "height": 680,
         "resizable": false,
         "visible": false,
-        "skipTaskbar": true,
+        "skipTaskbar": false,
         "center": true
       },
       {
@@ -45,7 +45,7 @@
         "height": 480,
         "resizable": false,
         "visible": false,
-        "skipTaskbar": true
+        "skipTaskbar": false
       }
     ],
     "security": {

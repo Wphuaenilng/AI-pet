@@ -1,23 +1,34 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { PetBrain, type BubbleState } from './PetBrain'
-import { getLabel, isTauri } from '../lib/tauri'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { PetBrain, type BubbleState, type PetMenuState } from './PetBrain'
+import { getLabel, invoke, isTauri } from '../lib/tauri'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
-const bubble = ref<BubbleState>({ visible: false, text: '' })
+const bubble = ref<BubbleState>({ visible: false, text: '', bottom: 0 })
+const menu = ref<PetMenuState>(null)
 const brain = ref<PetBrain | null>(null)
 const preview = !isTauri
 const mockWindow = ref<{ x: number; y: number; w: number; h: number } | null>(null)
+
+// HMR 重跑 setup 时不会触发卸载钩子，而模块级变量又会随模块重建归零：
+// 只有挂在 window 上的引用能跨过热更新看见上一个 brain，防止多 brain 抢同一个窗口
+const host = window as unknown as { __petBrain?: PetBrain }
 
 onMounted(() => {
   if (!canvasRef.value) return
   // 只有宠物窗口（或浏览器预览）才启动大脑，防止 settings/chat 窗口重复启动
   if (isTauri && getLabel() !== 'pet') return
-  const b = new PetBrain(canvasRef.value, (s) => (bubble.value = { ...s }))
+  host.__petBrain?.stop()
+  const b = new PetBrain(
+    canvasRef.value,
+    (s) => (bubble.value = { ...s }),
+    undefined,
+    (m) => (menu.value = m),
+  )
   brain.value = b
   // 调试入口（仅预览/开发模式暴露，不进生产包）
   if (preview || import.meta.env.DEV) {
-    ;(window as unknown as { __petBrain?: PetBrain }).__petBrain = b
+    host.__petBrain = b
   }
   b.start()
     .then(() => {
@@ -27,11 +38,28 @@ onMounted(() => {
     .catch((e) => console.error('PetBrain 启动失败', e))
 })
 
+// 热更新或窗口重建时旧 brain 的 rAF 与鼠标轮询不会自己停下：
+// 多个 brain 同时驱动同一个 OS 窗口，表现为拖拽闪烁、行为开关"关不掉"
+onBeforeUnmount(() => {
+  brain.value?.stop()
+  if (host.__petBrain === brain.value) host.__petBrain = undefined
+  brain.value = null
+})
+
 function dbg(name: 'sleep' | 'wander' | 'climb' | 'dance' | 'pat') {
   brain.value?.debug[name]()
 }
 function sayHi() {
   brain.value?.say('你好呀！我是住在你桌面上的小家伙～')
+}
+function menuSettings() {
+  brain.value?.closeMenu()
+  if (isTauri) void invoke('show_window', { label: 'settings' }).catch(() => {})
+}
+function menuHidePet() {
+  brain.value?.closeMenu()
+  // 只隐藏窗口：进程和情绪/位置/记忆都留在内存里，托盘「召唤」可原地唤回
+  if (isTauri) void invoke('hide_window', { label: 'pet' }).catch(() => {})
 }
 </script>
 
@@ -46,8 +74,16 @@ function sayHi() {
     </div>
     <canvas ref="canvasRef" class="pet-canvas" />
     <transition name="bubble-pop">
-      <div v-if="bubble.visible" class="bubble">{{ bubble.text }}</div>
+      <div v-if="bubble.visible" class="bubble" :style="{ bottom: bubble.bottom + 'px' }">
+        {{ bubble.text }}
+      </div>
     </transition>
+
+    <!-- 右键自定义菜单：替代 WebView2 自带的"复制图像"菜单 -->
+    <div v-if="menu" class="pet-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
+      <button @click="menuSettings">进入设置</button>
+      <button @click="menuHidePet">关闭</button>
+    </div>
 
     <div v-if="preview" class="preview-bar">
       <span class="preview-title">预览模式</span>
@@ -79,32 +115,21 @@ function sayHi() {
 }
 .bubble {
   position: absolute;
-  top: 10px;
   left: 50%;
   transform: translateX(-50%);
-  max-width: 236px;
-  padding: 9px 13px;
+  /* 380 是目标宽度，但缩到 0.5x 时窗口只有 280 CSS px，
+     不夹一下会被 .pet-root 的 overflow:hidden 裁掉 */
+  max-width: min(380px, calc(100vw - 12px));
+  padding: 5px 9px;
   background: #fff;
   border: 1.5px solid rgba(255, 122, 89, 0.35);
   border-radius: 14px;
   box-shadow: 0 4px 14px rgba(90, 60, 40, 0.18);
   color: #3d2e26;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.5;
   text-align: center;
   word-break: break-word;
-}
-.bubble::after {
-  content: '';
-  position: absolute;
-  bottom: -6px;
-  left: 50%;
-  transform: translateX(-50%) rotate(45deg);
-  width: 10px;
-  height: 10px;
-  background: #fff;
-  border-right: 1.5px solid rgba(255, 122, 89, 0.35);
-  border-bottom: 1.5px solid rgba(255, 122, 89, 0.35);
 }
 .bubble-pop-enter-active,
 .bubble-pop-leave-active {
@@ -114,6 +139,34 @@ function sayHi() {
 .bubble-pop-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(6px) scale(0.94);
+}
+.pet-menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 92px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  background: #fff;
+  border: 1.5px solid rgba(255, 122, 89, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(90, 60, 40, 0.22);
+}
+.pet-menu button {
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: #3d2e26;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pet-menu button:hover {
+  background: #ffefe8;
+  color: #ff7a59;
 }
 .mock-window {
   position: absolute;

@@ -44,8 +44,16 @@ const avatar = computed(() => {
 })
 const speciesEmoji = computed(() => {
   const s = settings.value
-  if (!s) return '🐱'
-  return s.species === 'bunny' ? '🐰' : s.species === 'fox' ? '🦊' : '🐱'
+  switch (s?.species) {
+    case 'bunny':
+      return '🐰'
+    case 'fox':
+      return '🦊'
+    case 'dot':
+      return '⚫'
+    default:
+      return '🐱'
+  }
 })
 
 onMounted(async () => {

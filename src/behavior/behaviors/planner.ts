@@ -62,8 +62,11 @@ export class Planner {
         ),
         new Act((ctx) => new ApproachAndSpeakGoal(ctx as PetBrain, ctx.pickCanned('bored'))),
       ]),
-      // 随机行为池
-      new Act((ctx) => (ctx as PetBrain).pickRandomBehavior()),
+      // 随机行为池（"自动活动"关掉后它不再自己找事做，只回应交互）
+      new Sequence([
+        new Cond((ctx) => ctx.settings.autoActivity),
+        new Act((ctx) => (ctx as PetBrain).pickRandomBehavior()),
+      ]),
       // 兜底
       new Act(() => new IdleGoal(b, 2 + Math.random() * 3)),
     ])

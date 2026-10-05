@@ -100,7 +100,7 @@ export interface WindowInfo {
 }
 
 export type PersonalityId = 'gentle' | 'practical'
-export type Species = 'cat' | 'bunny' | 'fox'
+export type Species = 'cat' | 'bunny' | 'fox' | 'dot'
 
 export interface Settings {
   apiBaseUrl: string

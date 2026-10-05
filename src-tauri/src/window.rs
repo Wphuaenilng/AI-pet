@@ -2,7 +2,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, Position};
 
-pub const PET_W: f64 = 280.0;
+pub const PET_W: f64 = 560.0;
 pub const PET_H: f64 = 340.0;
 
 pub fn init_windows(app: AppHandle) {
@@ -10,7 +10,7 @@ pub fn init_windows(app: AppHandle) {
     if let Some(pet) = app.get_webview_window("pet") {
         let size = pet
             .outer_size()
-            .unwrap_or(tauri::PhysicalSize::new(280, 340));
+            .unwrap_or(tauri::PhysicalSize::new(560, 340));
         // 初始位置：右下角、探头（猫绘制在窗口中心且面朝行进方向，
         // 露出 60% 窗口宽度才能看到猫脸；完全在屏幕外时 WebView2 还会节流 rAF）
         // 脚底（窗口底部 - PAD_BOTTOM）必须正好落在工作区底（地板）上

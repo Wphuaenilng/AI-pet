@@ -34,6 +34,8 @@ export function speciesLabel(s: Species): string {
       return '小白兔'
     case 'fox':
       return '小狐狸'
+    case 'dot':
+      return '小黑豆'
   }
 }
 

@@ -5,6 +5,8 @@
 
 修复分四批：P0 功能失效 → P1 泄漏与稳定性 → P2 功能接线 → P3 顺手小修。每批独立可验证，P0+P1 建议一次提交。
 
+> **2026-10-03 复核**：B1–B17 与 P3 在代码层面均已落实，`vue-tsc` / `vite build` / `cargo check` 全绿，并已用 `npm run tauri dev` 做实机验证——逐条状态见文末「2026-10-03 复核」一节。该节另记 4 个原清单未覆盖的新缺陷 **B18–B21**，其中 B18 是 B4 修法引入的回归（正是它导致"宠物不动、点不到也拖不动"）。
+
 ---
 
 ## P0：功能失效（约半天，立即修）
@@ -14,7 +16,7 @@
 | B1 | 窗口枚举恒为空，"跳上窗口顶"整个功能死亡：无 owner 的窗口 `GetWindow` 返回 NULL→`Err`→`unwrap_or(true)` 被跳过；有 owner 的窗口也返回 true 被跳过，两条路全跳 | `src-tauri/src/desktop.rs:146` | `unwrap_or(true)` 改 `unwrap_or(false)`（语义：无 owner 保留，有 owner 跳过） | 启动后宠物日志 `windows>0`；打开记事本，宠物能跳上其标题栏并跟随移动 |
 | B2 | chat/settings 窗点原生 X 被销毁，托盘"聊天/设置"永久失效直到重启 | `src-tauri/src/main.rs:36`（setup 无 `on_window_event`） | setup 里对这两个窗口拦截 `CloseRequested` → `api.prevent_close()` + `hide()` | 托盘开聊天→点 X→托盘再开，可正常唤回 |
 | B3 | 聊天窗永久卡"思考中"：`memory.save()` 在 try/catch 外，失败后 `thinking` 永不复位 | `src/chat/ChatApp.vue:112` | 把保存段挪进 try/finally，`thinking.value = false` 放 finally | 临时改坏 store 路径模拟失败，聊天窗仍可继续输入 |
-| B4 | ~~窗口位置同步永久卡死：`posInFlight` 无 try/finally，`set_pet_position` 一次失败后宠物永不跟随~~ ✅ 已修 2026-09-30：`send()` 整体包 try/finally，finally 里复位 `posInFlight` | `src/pet/PetBrain.ts:822-834` | `send()` 整体包 try/finally，finally 里复位 `posInFlight` | 宠物走动时窗口持续跟随；人为注入一次失败后仍能恢复跟随 |
+| B4 | ~~窗口位置同步永久卡死：`posInFlight` 无 try/finally，`set_pet_position` 一次失败后宠物永不跟随~~ ⚠️ 2026-09-30 的修法不完整：try/finally 确实保住了 `posInFlight`，但脏标记在进循环前就被消费掉，导致 `set_pet_position` 一次都没调用过 → 见 **B18** | `src/pet/PetBrain.ts:822-834` | `send()` 整体包 try/finally，finally 里复位 `posInFlight` | 宠物走动时窗口持续跟随；人为注入一次失败后仍能恢复跟随 |
 | B5 | 32ms 鼠标轮询 interval 句柄未保存，`stop()` 清不掉，泄漏且累积；且无 `.catch` | `src/desktop/World.ts:63-74` | 保存句柄，`stop()` 一并清除；`.then` 链补 `.catch(() => {})` | stop/start 循环 10 次，日志无重复轮询、无 unhandled rejection |
 
 ## 额外修复（2026-09-30，用户报告"小猫呆在右下角不动，不能拖拽点击"）
@@ -53,6 +55,68 @@
 - 昵称正则收紧：排除"我是说/叫我怎么办"等误伤句式，提取后气泡里确认一次。（`ChatApp.vue:96-99`）
 - `PromptBuilder.ts:45`：`.filter(l => l !== '')` 误删空行哨兵，改用显式分隔逻辑；`:69` JSON 缺 `reply` 时不要把原始 JSON 读出来，走离线兜底。
 - 补 bunny 头像（可先用 `scripts/make-assets.ps1` 生成，或继续 emoji 兜底并接受）。
+
+---
+
+## 2026-10-03 复核：验证状态 + 本轮新增缺陷
+
+### 环境已打通（下次别再踩）
+
+- `npm install` 必须带 `--registry=https://registry.npmmirror.com`：`package-lock.json` 的 `resolved` 全在 npmmirror，而 npm 12 默认 `allow-remote = "none"`，registry 不一致时所有 tarball 被判为 remote 直接拒绝（`EALLOWREMOTE`）。
+- 已装 rustup（`stable-x86_64-pc-windows-msvc`）+ VS 2022 Build Tools（VCTools 工作负载）。**注意**：`C:\Program Files\Git\usr\bin\link.exe` 是 coreutils 的 `ln` 克隆，没有真 MSVC 时 rustc 会误用它，报错形如 `link: extra operand '...rcgu.o'`——那是"链接器找错人"，不是链接失败。
+- `npm run tauri dev` 内部是裸 `cargo run`，不吃 `--config`，所以仓库根放了 `.cargo/config.toml`（rsproxy 源替换）；它是未跟踪文件，决定是否 `.gitignore` 或提交。
+
+### 编译级验证（全部通过）
+
+| 命令 | 结果 |
+|---|---|
+| `vue-tsc --noEmit` | 0 错误 |
+| `vite build` | 成功产出 `dist/` |
+| `cargo check`（src-tauri） | exit 0，**0 error / 0 warning**，冷编译 3m19s |
+
+### 实机验证（`npm run tauri dev`）
+
+已确认：`world started monitors=1 windows=2`（B1 生效）、`settings ok, scale=1 species=cat`、心跳状态轮换覆盖 WALK/SIT/LAY/SLEEP/TALK/LOOK/JUMP 且 `air=true→false` 落地正常（9-30 三条追加修复生效）、全程 **0 条 error / panic / unhandled rejection**。
+
+| 项 | 代码 | 实机 | 备注 |
+|---|---|---|---|
+| B1 窗口枚举 | ✅ | ✅ `windows=2` | "跳上标题栏并跟随"依赖 B18，需重测 |
+| B2 拦截原生关闭 | ✅ | ⬜ | 需托盘：关聊天窗再唤回 |
+| B3 聊天卡思考中 | ✅ | ⬜ | 需注入保存失败 |
+| B4 `posInFlight` | ✅ | ❌ | **修法不完整，见 B18** |
+| B5 轮询句柄 | ✅ | ⬜ | 需 stop/start 循环 |
+| B6 TTS `Child` 泄漏 | ✅ | ⬜ | 需连续 20 次语音看句柄数 |
+| B7 监听器/定时器登记 | ✅ | ⬜ | 需 stop/start 后看摸摸是否重复触发 |
+| B8 refresh/轮询 catch | ✅ | 部分 | 挂机期间 0 rejection |
+| B9 启动不闪跳 | ✅ | 部分 | 本机单屏正常；1366×768 待测 |
+| B10 损坏存档提示 | ✅ | ⬜ | 需手写坏 JSON 看 `.bak` |
+| B11 `start()` 异常保护 | ✅ | 部分 | 无静默白屏，未注入失败 |
+| 追加三条（行为树/概率/预览几何） | ✅ | ✅ | 见上表状态轮换 |
+| B12 memory-event 消费 | ✅ | ⬜ | 需看 `memory.json` 是否长出非聊天记忆 |
+| B13 真实情绪喂 AI | ✅ | ⬜ | 需抓 prompt 或看 AI 回应 |
+| B14 四组台词接线 | ✅ | ⬜ | 拖拽/放下/犯困/玩耍 |
+| B15 死代码接线或删除 | ✅ | ⬜ | `headTilt`/`concern`/`updateAir` 已接，观感待看 |
+| B16 清空记忆竞态 | ✅ | ⬜ | 需双窗操作 |
+| B17 scale/默认值单源 | ✅ | ⬜ | ⚠️ Rust 端 `window.rs:51` 仍硬编码 `clamp(0.5, 2.0)`，与前端常量同值但双写，未真正单源 |
+| P3 小修 | ✅ | ⬜ | bunny 头像仍 emoji 兜底（计划内已允许） |
+
+### 本轮新增缺陷（原清单未覆盖）
+
+| # | 缺陷 | 位置 | 修法 | 状态 |
+|---|---|---|---|---|
+| B18 | **`syncWindowPos` 在进循环前就消费掉脏标记**：`if (!posDirty) return` 之后紧跟 `posDirty = false`，而 `void send()` 是同步调用、其 `while (this.posDirty)` 立即求值 → 循环体一次都不执行，`set_pet_position` **从未被调用**（日志 0 条），宠物窗永不跟随。连带 `winX/winY` 只按物理坐标乐观更新而与真实窗口脱钩 → `updateHitTest` 恒 false → `set_pet_ignore_cursor_events(ignore: true)` 常驻，鼠标对整个窗口穿透，**点不到也拖不动**。这是 B4 修法引入的回归 | `src/pet/PetBrain.ts:843-876` | 删掉循环前的 `this.posDirty = false`，交给 `while` 自己消费 | ✅ 已修并实机验证：修复后同一时刻前端发送值与 OS 窗口物理矩形逐项对齐（697↔700、543↔547、393↔396、241↔243），累计 4603 次调用、0 失败 |
+| B19 | `autoActivity` 名不副实：只在"主动搭话"分支和 `maybeProactive` 被读，随机行为池完全不受控，关掉开关它照样满屏走 | `src/behavior/behaviors/planner.ts:65` | 随机池外套 `Sequence([Cond(ctx => ctx.settings.autoActivity), Act(...)])`；Selector 已能跳过 `'success'`，条件不满足时自然落到兜底 IdleGoal | ✅ 已修，待复测"关掉后只回应交互" |
+| B20 | 设置/聊天窗 `skipTaskbar: true`：点减号后窗口进入"任务栏上没有入口"的最小化态，用户观感是"直接进了托盘" | `src-tauri/tauri.conf.json` settings/chat 两项 | ⚠️ 第一次修反了方向（加了 `minimizable: false` 把减号禁掉）。用户要的是**能最小化到任务栏**，正解是 `"skipTaskbar": false`，让两窗出现在任务栏、减号可用且可还原 | ✅ 已改为 skipTaskbar:false 并恢复默认可最小化，待复测 |
+| B21 | 设置窗三处布局不和谐：① `.field input` 选择器同时命中 range，把文本框的边框/内边距/底色套上滑块，加上未声明 `color-scheme`，WebView2 按系统深色模式画原生轨道 → 一条黑杠；② `.switch-row` 用 `flex-wrap`，5 个开关排成 3+2 失衡；③ `.hero-actions` 三颗胶囊被 flex 压缩，"聊天"二字竖排拆行 | `src/settings/SettingsApp.vue` CSS、`src/style.css` | ① 加 `.field input[type='range']` 覆盖 + 全局 `color-scheme: light`；② 开关区改 `grid-template-columns: repeat(2, minmax(0,1fr))`；③ 按钮 `flex: 0 0 auto; white-space: nowrap`，gap 8→6、padding 12→10 | ✅ 已修并在 420px 宽度实测：三按钮一行（需 226px / 可用 232px）、开关区两列三行、滑块 `border: 0px none` 且高 22px。② 后续又发现仅 `color-scheme` 不足以让轨道变浅，已改为 `-webkit-appearance:none` + 自绘 `::-webkit-slider-runnable-track`（6px `#f0e0d6`）与 thumb |
+| B22 | **`PetApp.vue` 没有卸载钩子**：HMR 或组件重挂载时旧 `PetBrain` 的 rAF 与 `World` 鼠标轮询继续跑，多个 brain 同时 `set_pet_position` 驱动同一个 OS 窗口。表现为**拖拽时窗口闪烁**、以及"把自动活动关掉照样走动"（旧 brain 跑的是改动前的 Planner）。日志特征：`start begin` 次数远大于页面加载次数，心跳里出现两条互不相干的 x 轨迹（其中一条恒定越界，如 `x=2572` > 屏宽 1920） | `src/pet/PetApp.vue:12-28` | `onBeforeUnmount(() => { brain.value?.stop(); brain.value = null })` | ✅ 已修并实机验证：干净重启后 `start begin=1`、x 轨迹单一恒定、`max x=1667 < 1920`；`autoActivity=false` 状态下 45s 内目标只有 `idle`/`enter`，**无 wander** |
+| B23 | `clearMemory()` 只写空存档、不广播：聊天窗内存里的旧记忆会在它下次 `save()` 时把空存档覆盖回去。B16 的修法只补了消费端（聊天窗会重载），生产端从没发过事件 | `src/settings/SettingsApp.vue` `clearMemory` | `resetMemory()` 之后 `await saveSettings({ ...s })` 触发 `settings://updated` | ✅ 已修，待双窗复测 |
+| B24 | 提示用的是原生 `alert` / `confirm`：WebView2 弹出的是灰底系统对话框（标题还带 `localhost:5199 显示`），与奶油色设计语言冲突 | `src/settings/SettingsApp.vue` 3 处调用 | 换成应用内组件弹框：`askConfirm(text): Promise<boolean>` + `showAlert(text)`，遮罩 + 卡片 + 胶囊按钮，沿用 `.onboard` 视觉 | ✅ 已改，待复测观感 |
+
+### 仍未验证（下一步）
+
+B1 后半段跳窗跟随、B2 托盘唤回、B6 句柄数、B5/B7/B8 的 stop/start 循环、B10 损坏存档、B12-B17 的功能观感、1h 挂机内存基线、`npm run tauri build` 的 release 验收。
+
+本轮改动的肉眼复测（需要人看/人手操作）：拖拽是否还闪（B22 修后应为单 brain）、拖拽手感（B18 修后窗口才第一次真正跟随）、设置窗减号能否最小化并从任务栏还原（B20）、组件弹框观感（B24）、滑块轨道是否已变浅（B21②）。
 
 ---
 

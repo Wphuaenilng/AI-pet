@@ -28,6 +28,31 @@ const showKey = ref(false)
 const testState = ref<'idle' | 'testing' | 'ok' | 'fail'>('idle')
 const testMsg = ref('')
 const savedTip = ref(false)
+
+// 应用内弹框：原生 alert/confirm 在 WebView2 里是灰底系统对话框，与设计语言不符
+const dlg = ref<{ kind: 'alert' | 'confirm'; text: string } | null>(null)
+let dlgResolve: ((ok: boolean) => void) | null = null
+
+function showAlert(text: string): Promise<void> {
+  return new Promise<void>((res) => {
+    dlgResolve = () => res()
+    dlg.value = { kind: 'alert', text }
+  })
+}
+
+function askConfirm(text: string): Promise<boolean> {
+  return new Promise<boolean>((res) => {
+    dlgResolve = res
+    dlg.value = { kind: 'confirm', text }
+  })
+}
+
+function closeDlg(ok: boolean) {
+  const r = dlgResolve
+  dlg.value = null
+  dlgResolve = null
+  r?.(ok)
+}
 const emotion = ref<EmotionPayload | null>(null)
 const firstRun = ref(false)
 
@@ -94,7 +119,7 @@ onMounted(async () => {
     await listen<EmotionPayload>('pet://emotion', (p) => (emotion.value = p)),
     // 存档损坏提示（Rust 端已自动备份为 .bak 并重置）
     await listen<string>('store://corrupted', (name) => {
-      alert(`本地存档 ${name}.json 损坏，已自动备份为 ${name}.json.bak 并重置为默认值。`)
+      void showAlert(`本地存档 ${name}.json 损坏，已自动备份为 ${name}.json.bak 并重置为默认值。`)
     }),
   )
 })
@@ -141,9 +166,12 @@ function setSpecies(sp: Species) {
 }
 
 async function clearMemory() {
-  if (!confirm('确定要清空全部记忆吗？（对话、用户信息、宠物记忆都会重置）')) return
+  if (!(await askConfirm('确定要清空全部记忆吗？（对话、用户信息、宠物记忆都会重置）'))) return
   await resetMemory()
-  alert('已重置记忆')
+  // 广播一次设置更新，聊天窗收到后重载 MemoryStore；
+  // 否则它内存里的旧记忆会在下次保存时把空存档覆盖回去（B16 的竞态）
+  await saveSettings({ ...s })
+  void showAlert('已重置记忆')
 }
 
 function openChat() {
@@ -177,6 +205,7 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
   { id: 'cat', name: '奶糖 · 小橘猫', emoji: '🐱', avatar: 'avatars/pet-cream.png' },
   { id: 'bunny', name: '雪团 · 小白兔', emoji: '🐰', avatar: '' },
   { id: 'fox', name: '小狐 · 橙狐狸', emoji: '🦊', avatar: 'avatars/pet-fox.png' },
+  { id: 'dot', name: '点点 · 小黑豆', emoji: '⚫', avatar: '' },
 ]
 </script>
 
@@ -333,6 +362,19 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
       </div>
     </div>
 
+    <!-- 应用内弹框：替代原生 alert / confirm -->
+    <div v-if="dlg" class="dlg-mask" @click.self="closeDlg(false)">
+      <div class="dlg-card">
+        <p class="dlg-text">{{ dlg.text }}</p>
+        <div class="dlg-btns">
+          <button v-if="dlg.kind === 'confirm'" class="dlg-ghost" @click="closeDlg(false)">取消</button>
+          <button class="primary" @click="closeDlg(true)">
+            {{ dlg.kind === 'confirm' ? '确定清空' : '知道啦' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <transition name="fade">
       <div v-if="savedTip" class="saved-tip">已保存 ✓</div>
     </transition>
@@ -416,16 +458,20 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
 }
 .hero-actions {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .hero-actions button {
   border: 1px solid #f0dcd2;
   background: #fff;
   border-radius: 999px;
-  padding: 5px 12px;
+  padding: 5px 10px;
   font-size: 12px;
   cursor: pointer;
   color: #3d2e26;
+  /* 宽度不够时整颗按钮换行，而不是把「聊天」二字拆成两行 */
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 .hero-actions button:hover {
   border-color: #ff7a59;
@@ -508,6 +554,44 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
 }
 .field input:focus {
   border-color: #ff7a59;
+}
+/* range 不该继承文本框的边框/内边距；轨道颜色必须自己画，
+   否则 WebView2 按系统深色模式把未填充部分渲染成黑条 */
+.field input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  height: 22px;
+  width: 100%;
+  cursor: pointer;
+}
+.field input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #f0e0d6;
+}
+.field input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #ff7a59;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.field input[type='range']::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #f0e0d6;
+}
+.field input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #ff7a59;
 }
 .presets {
   display: flex;
@@ -649,9 +733,9 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
   padding: 1px 7px;
 }
 .switch-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
   margin-top: 4px;
 }
 .switch {
@@ -759,6 +843,43 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
   font-size: 12.5px;
   color: #6f5d50;
   line-height: 1.9;
+}
+.dlg-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(61, 46, 38, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  backdrop-filter: blur(2px);
+}
+.dlg-card {
+  background: #fff;
+  border-radius: 20px;
+  padding: 20px 22px 16px;
+  width: 300px;
+  box-shadow: 0 10px 40px rgba(61, 46, 38, 0.3);
+}
+.dlg-text {
+  font-size: 13.5px;
+  color: #3d2e26;
+  line-height: 1.7;
+  margin: 0 0 16px;
+}
+.dlg-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.dlg-ghost {
+  border: 1px solid #f0dcd2;
+  background: #fff;
+  color: #6f5d50;
+  border-radius: 12px;
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
 }
 .saved-tip {
   position: fixed;
