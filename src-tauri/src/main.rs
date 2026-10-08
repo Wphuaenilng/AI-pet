@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod backup;
 mod desktop;
 mod mouse;
 mod petdex;
@@ -75,6 +76,10 @@ fn main() {
             store::read_text,
             store::write_text,
             store::open_text,
+            backup::backup_export,
+            backup::backup_list,
+            backup::backup_restore,
+            backup::backup_open_dir,
             petdex::petdex_list,
             server::report_status,
             server::approval_decide,

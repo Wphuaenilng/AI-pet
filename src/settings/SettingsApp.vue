@@ -32,7 +32,7 @@ const testMsg = ref('')
 const savedTip = ref(false)
 
 // 应用内弹框：原生 alert/confirm 在 WebView2 里是灰底系统对话框，与设计语言不符
-const dlg = ref<{ kind: 'alert' | 'confirm'; text: string } | null>(null)
+const dlg = ref<{ kind: 'alert' | 'confirm'; text: string; okText?: string } | null>(null)
 let dlgResolve: ((ok: boolean) => void) | null = null
 
 function showAlert(text: string): Promise<void> {
@@ -42,10 +42,10 @@ function showAlert(text: string): Promise<void> {
   })
 }
 
-function askConfirm(text: string): Promise<boolean> {
+function askConfirm(text: string, okText?: string): Promise<boolean> {
   return new Promise<boolean>((res) => {
     dlgResolve = res
-    dlg.value = { kind: 'confirm', text }
+    dlg.value = { kind: 'confirm', text, okText }
   })
 }
 
@@ -168,6 +168,7 @@ onMounted(async () => {
     invoke<PetPackInfo[]>('petdex_list')
       .then((ps) => (packs.value = ps ?? []))
       .catch(() => {})
+    void refreshBackups()
   }
 })
 
@@ -219,7 +220,7 @@ function setPersonality(p: PersonalityId) {
 }
 
 async function clearMemory() {
-  if (!(await askConfirm('确定要清空全部记忆吗？（对话、用户信息、宠物记忆都会重置）'))) return
+  if (!(await askConfirm('确定要清空全部记忆吗？（对话、用户信息、宠物记忆都会重置）', '确定清空'))) return
   await resetMemory()
   // 广播一次设置更新，聊天窗收到后重载 MemoryStore；
   // 否则它内存里的旧记忆会在下次保存时把空存档覆盖回去（B16 的竞态）
@@ -229,6 +230,50 @@ async function clearMemory() {
 
 function openMemory() {
   if (isTauri) void invoke('open_text', { name: 'memory.md' })
+}
+
+// 备份与恢复（M0 收尾）：设置/心情/记忆一键导出，支持从备份恢复
+interface BackupInfo {
+  name: string
+  created: string
+  files: string[]
+}
+const backups = ref<BackupInfo[]>([])
+
+async function refreshBackups() {
+  if (!isTauri) return
+  try {
+    backups.value = (await invoke<BackupInfo[]>('backup_list')) ?? []
+  } catch (e) {
+    console.warn('backup_list failed:', e)
+  }
+}
+
+async function exportBackup() {
+  try {
+    const path = await invoke<string>('backup_export')
+    await refreshBackups()
+    void showAlert(`已导出备份（设置 / 心情状态 / 记忆）：\n${path}`)
+  } catch (e) {
+    void showAlert('导出备份失败：' + (e instanceof Error ? e.message.slice(0, 80) : String(e).slice(0, 80)))
+  }
+}
+
+async function restoreBackup(b: BackupInfo) {
+  if (!(await askConfirm(`确定用备份「${b.created}」恢复吗？\n当前存档会先另存为 *.pre-restore.bak 兜底。`, '确定恢复'))) return
+  try {
+    await invoke('backup_restore', { name: b.name })
+    // 恢复后重载本窗设置并广播，聊天窗收到后重载记忆（同 clearMemory 的竞态防护）
+    Object.assign(s, await loadSettings())
+    await emitAll('settings://updated', { ...s })
+    void showAlert('已恢复。位置、心情等运行态数据重启应用后完全生效。')
+  } catch (e) {
+    void showAlert('恢复失败：' + (e instanceof Error ? e.message.slice(0, 80) : String(e).slice(0, 80)))
+  }
+}
+
+function openBackupsDir() {
+  if (isTauri) void invoke('backup_open_dir').catch(() => {})
 }
 
 function openChat() {
@@ -452,6 +497,26 @@ function applyPreset(p: { url: string; model: string }) {
       </div>
     </section>
 
+    <!-- 备份与恢复 -->
+    <section class="card">
+      <div class="card-title">备份与恢复</div>
+      <p class="hint">
+        把设置、心情状态、记忆整体导出到文档目录的备份文件夹（设置→宠物外观、名字、AI 配置、记忆都在内），
+        换机或误操作后可以从这里恢复。
+      </p>
+      <div class="mem-actions">
+        <button class="ghost" @click="exportBackup">导出备份</button>
+        <button class="ghost" @click="openBackupsDir">打开备份文件夹</button>
+      </div>
+      <div v-if="backups.length" class="backup-list">
+        <div v-for="b in backups" :key="b.name" class="backup-row">
+          <span class="backup-name">{{ b.created }}</span>
+          <span class="backup-files">{{ b.files.length }} 个文件</span>
+          <button class="ghost" @click="restoreBackup(b)">恢复</button>
+        </div>
+      </div>
+    </section>
+
     <footer class="foot">Desktop AI Pet v0.1 · 本地行为系统永远在线，AI 只是它的灵魂</footer>
 
     <div v-if="firstRun" class="onboard">
@@ -473,7 +538,7 @@ function applyPreset(p: { url: string; model: string }) {
         <div class="dlg-btns">
           <button v-if="dlg.kind === 'confirm'" class="dlg-ghost" @click="closeDlg(false)">取消</button>
           <button class="primary" @click="closeDlg(true)">
-            {{ dlg.kind === 'confirm' ? '确定清空' : '知道啦' }}
+            {{ dlg.kind === 'confirm' ? (dlg.okText ?? '确定') : '知道啦' }}
           </button>
         </div>
       </div>
@@ -893,6 +958,32 @@ function applyPreset(p: { url: string; model: string }) {
   padding: 7px 14px;
   font-size: 12.5px;
   cursor: pointer;
+}
+.backup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.backup-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid #f3e4da;
+  border-radius: 12px;
+  background: #fffdfb;
+  font-size: 12px;
+  color: #3d2e26;
+}
+.backup-name {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+.backup-files {
+  color: #b3a294;
+  font-size: 11px;
+  white-space: nowrap;
 }
 .foot {
   text-align: center;
