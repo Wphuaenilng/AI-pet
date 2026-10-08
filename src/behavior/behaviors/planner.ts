@@ -25,6 +25,14 @@ export class Planner {
     this.root = new Selector([
       // AI 提出的高层行为意图（26.2：仅意图，由本地系统裁决）
       new Act((ctx) => ctx.takePendingIntent()),
+      // 饿了讨食（附录 A.2）：凑过来要吃的，90s 冷却防刷屏
+      new Sequence([
+        new Cond((ctx) => ctx.emotion.v.hunger < 22 && ctx.canBeg()),
+        new Act((ctx) => {
+          ctx.markBeg()
+          return new ApproachAndSpeakGoal(ctx as PetBrain, ctx.pickCanned('hungry'))
+        }),
+      ]),
       // 累了就睡
       new Sequence([
         new Cond((ctx) => ctx.emotion.v.energy < 16),
@@ -74,9 +82,8 @@ export class Planner {
 
   pick(): Goal {
     const r: BtResult = this.root.tick(this.brain)
-    // Sequence 返回 'success' 表示条件满足但内部 Selector 未命中（返回了 LookGoal 等），
-    // 但外层 Selector 收到 'success' 字符串会提前返回，导致 pick 拿到字符串而非 Goal。
-    // 这里兜底：如果结果是字符串或空，返回 IdleGoal。
+    // 正常情况下 Selector 会返回第一个产出的 Goal；
+    // 这里只作类型兜底（防御未来节点写出不产 Goal 的分支）。
     if (typeof r === 'string' || !r) {
       return new IdleGoal(this.brain, 2 + Math.random() * 3)
     }

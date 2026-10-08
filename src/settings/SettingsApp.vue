@@ -3,13 +3,15 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   DEFAULT_SETTINGS,
   emitAll,
+  invoke,
   isTauri,
   type EmotionPayload,
   type PersonalityId,
-  type Species,
 } from '../lib/tauri'
 import { listen } from '../lib/tauri'
-import { PERSONALITIES, speciesLabel } from '../ai/Personality'
+import { PERSONALITIES } from '../ai/Personality'
+import { SHAPES, COLORS } from '../pet/bloub/skins'
+import { EXPRESSIONS } from '../pet/bloub/expressions'
 import { testConnection } from '../ai/AIClient'
 import {
   SCALE_MAX,
@@ -55,6 +57,47 @@ function closeDlg(ok: boolean) {
 }
 const emotion = ref<EmotionPayload | null>(null)
 const firstRun = ref(false)
+const autostart = ref(false)
+
+// bloub 外观定制（id 与 zh 标签的映射，数据来自 vendored bloub 模块）
+const SHAPE_ZH: Record<string, string> = {
+  cercle: '圆形', galet: '鹅卵石', squircle: '方圆', capsule: '胶囊',
+  triangle: '三角', hexagone: '六边', nuage: '云朵', goutte: '水滴'
+}
+const EXPR_ZH: Record<string, string> = {
+  neutre: '平静', attentif: '专注', surpris: '惊讶', excite: '兴奋',
+  heureux: '开心', hilare: '大笑', colere: '生气', triste: '难过',
+  effraye: '害怕', mefiant: '怀疑', confus: '困惑', curieux: '好奇',
+  fier: '得意', timide: '害羞', blase: '倦怠', somnolent: '犯困'
+}
+const BLOUB_SHAPES = SHAPES.map((x) => ({ id: x.id, zh: SHAPE_ZH[x.id] ?? x.id }))
+const BLOUB_COLORS = COLORS.map((x) => ({ id: x.id, hex: x.hex, zh: x.id }))
+const BLOUB_EXPRS = EXPRESSIONS.map((x) => ({ id: x.id, zh: EXPR_ZH[x.id] ?? x.id }))
+
+function setBloub(key: 'bloubShape' | 'bloubColor' | 'bloubExpression', id: string) {
+  s[key] = id
+  scheduleSave()
+}
+
+// Petdex 宠物包（M2）：~/.petdex/pets 下的已安装列表
+interface PetPackInfo {
+  slug: string
+  name: string
+  dir: string
+  sheet: string
+}
+const packs = ref<PetPackInfo[]>([])
+
+function choosePack(p: PetPackInfo | '') {
+  if (!p) {
+    s.petPack = ''
+    s.petPackSheet = ''
+  } else {
+    s.petPack = p.dir
+    s.petPackSheet = p.sheet
+  }
+  scheduleSave()
+}
 
 let saveTimer = 0
 let tipTimer = 0
@@ -97,14 +140,8 @@ const moodEmoji = computed(() => {
     case 'concern':
       return '😟'
     default:
-      return '🐱'
+      return '⚫'
   }
-})
-
-const avatar = computed(() => {
-  if (s.species === 'fox') return 'avatars/pet-fox.png'
-  if (s.species === 'cat') return 'avatars/pet-cream.png'
-  return ''
 })
 
 onMounted(async () => {
@@ -122,7 +159,28 @@ onMounted(async () => {
       void showAlert(`本地存档 ${name}.json 损坏，已自动备份为 ${name}.json.bak 并重置为默认值。`)
     }),
   )
+  if (isTauri) {
+    try {
+      autostart.value = (await invoke<boolean>('autostart_status')) ?? false
+    } catch (e) {
+      console.warn('autostart_status failed:', e)
+    }
+    invoke<PetPackInfo[]>('petdex_list')
+      .then((ps) => (packs.value = ps ?? []))
+      .catch(() => {})
+  }
 })
+
+/** 开机自启开关（Rust 命令封装 autostart 插件，失败时回滚 UI 状态） */
+async function toggleAutostart() {
+  try {
+    await invoke('autostart_set', { enable: autostart.value })
+    void showAlert(autostart.value ? '已开启开机自启' : '已关闭开机自启')
+  } catch (e) {
+    autostart.value = !autostart.value
+    void showAlert('设置开机自启失败：' + String(e).slice(0, 60))
+  }
+}
 
 onBeforeUnmount(() => {
   unlistens.forEach((u) => u())
@@ -160,11 +218,6 @@ function setPersonality(p: PersonalityId) {
   scheduleSave()
 }
 
-function setSpecies(sp: Species) {
-  s.species = sp
-  scheduleSave()
-}
-
 async function clearMemory() {
   if (!(await askConfirm('确定要清空全部记忆吗？（对话、用户信息、宠物记忆都会重置）'))) return
   await resetMemory()
@@ -172,6 +225,10 @@ async function clearMemory() {
   // 否则它内存里的旧记忆会在下次保存时把空存档覆盖回去（B16 的竞态）
   await saveSettings({ ...s })
   void showAlert('已重置记忆')
+}
+
+function openMemory() {
+  if (isTauri) void invoke('open_text', { name: 'memory.md' })
 }
 
 function openChat() {
@@ -201,20 +258,13 @@ function applyPreset(p: { url: string; model: string }) {
   scheduleSave()
 }
 
-const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string }[] = [
-  { id: 'cat', name: '奶糖 · 小橘猫', emoji: '🐱', avatar: 'avatars/pet-cream.png' },
-  { id: 'bunny', name: '雪团 · 小白兔', emoji: '🐰', avatar: '' },
-  { id: 'fox', name: '小狐 · 橙狐狸', emoji: '🦊', avatar: 'avatars/pet-fox.png' },
-  { id: 'dot', name: '点点 · 小黑豆', emoji: '⚫', avatar: '' },
-]
 </script>
 
 <template>
   <div class="settings-page">
     <!-- 宠物状态卡 -->
     <section class="hero card drag-region">
-      <img v-if="avatar" class="hero-avatar no-drag" :src="avatar" alt="pet" />
-      <span v-else class="hero-avatar emoji-hero no-drag">🐰</span>
+      <span class="hero-avatar emoji-hero no-drag">⚫</span>
       <div class="hero-info">
         <div class="hero-name">
           {{ s.petName || '团子' }}
@@ -236,7 +286,7 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
       <div class="emo-grid">
         <div v-for="(v, k) in emotion?.values ?? null" :key="k" class="emo-row">
           <span class="emo-label">{{
-            { happiness: '开心', energy: '精力', curiosity: '好奇', affection: '亲密', boredom: '无聊' }[k]
+            { happiness: '开心', energy: '精力', curiosity: '好奇', affection: '亲密', boredom: '无聊', hunger: '饱食' }[k]
           }}</span>
           <div class="emo-bar">
             <div class="emo-fill" :class="k" :style="{ width: v + '%' }" />
@@ -300,23 +350,71 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
       </div>
     </section>
 
-    <!-- 宠物图鉴 -->
+    <!-- 宠物外观 -->
     <section class="card">
-      <div class="card-title">宠物图鉴</div>
-      <div class="pets-grid">
-        <button
-          v-for="c in SPECIES_CARDS"
-          :key="c.id"
-          class="pet-card"
-          :class="{ active: s.species === c.id }"
-          @click="setSpecies(c.id)"
-        >
-          <img v-if="c.avatar" :src="c.avatar" alt="" />
-          <span v-else class="pet-emoji">{{ c.emoji }}</span>
-          <span class="pet-card-name">{{ c.name }}</span>
-          <span v-if="s.species === c.id" class="using-chip">使用中</span>
-        </button>
-      </div>
+      <div class="card-title">宠物外观</div>
+      <label class="field">
+        <span>形状</span>
+        <div class="chip-row">
+          <button
+            v-for="sh in BLOUB_SHAPES"
+            :key="sh.id"
+            class="chip"
+            :class="{ active: s.bloubShape === sh.id }"
+            @click="setBloub('bloubShape', sh.id)"
+          >
+            {{ sh.zh }}
+          </button>
+        </div>
+      </label>
+      <label class="field">
+        <span>颜色</span>
+        <div class="chip-row">
+          <button
+            v-for="c in BLOUB_COLORS"
+            :key="c.id"
+            class="swatch"
+            :class="{ active: s.bloubColor === c.id }"
+            :style="{ background: c.hex }"
+            :title="c.zh"
+            @click="setBloub('bloubColor', c.id)"
+          />
+        </div>
+      </label>
+      <label class="field">
+        <span>静止表情</span>
+        <div class="chip-row">
+          <button
+            v-for="e in BLOUB_EXPRS"
+            :key="e.id"
+            class="chip"
+            :class="{ active: s.bloubExpression === e.id }"
+            @click="setBloub('bloubExpression', e.id)"
+          >
+            {{ e.zh }}
+          </button>
+        </div>
+      </label>
+      <label class="field">
+        <span>Petdex 宠物包</span>
+        <div class="chip-row">
+          <button class="chip" :class="{ active: !s.petPack }" @click="choosePack('')">
+            默认 · 小黑点
+          </button>
+          <button
+            v-for="p in packs"
+            :key="p.dir"
+            class="chip"
+            :class="{ active: s.petPack === p.dir }"
+            @click="choosePack(p)"
+          >
+            {{ p.name }}
+          </button>
+        </div>
+        <span v-if="isTauri && !packs.length" class="hint">
+          未检测到已安装的 Petdex 宠物：运行 npx petdex install &lt;slug&gt; 后重新打开设置即可。
+        </span>
+      </label>
     </section>
 
     <!-- 行为 -->
@@ -336,6 +434,8 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
         <label class="switch"><input v-model="s.windowInteract" type="checkbox" @change="scheduleSave" /><i />窗口互动</label>
         <label class="switch"><input v-model="s.ttsEnabled" type="checkbox" @change="scheduleSave" /><i />语音播报</label>
         <label class="switch"><input v-model="s.proactive" type="checkbox" @change="scheduleSave" /><i />主动说话</label>
+        <label class="switch" title="开启后点击会穿透宠物（全局热键 Ctrl+Shift+U 也可切换）"><input v-model="s.clickThrough" type="checkbox" @change="scheduleSave" /><i />鼠标穿透</label>
+        <label class="switch" title="随系统启动自动运行"><input v-model="autostart" type="checkbox" @change="toggleAutostart" /><i />开机自启</label>
       </div>
     </section>
 
@@ -343,9 +443,13 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
     <section class="card">
       <div class="card-title">记忆</div>
       <p class="hint">
-        它会记住你聊过的内容和你们之间发生的事，全部保存在本机。AI 会自动挑选值得长期记住的信息。
+        长期记忆是一个可编辑的 <code>memory.md</code>，和设置文件放在同一目录——用记事本打开就能直接改，改完自动生效。
+        AI 聊天时得知的信息会自动记入"用户画像"，发生的事记入"宠物记忆"。
       </p>
-      <button class="danger" @click="clearMemory">重置记忆</button>
+      <div class="mem-actions">
+        <button class="ghost" @click="openMemory">打开记忆文件</button>
+        <button class="danger" @click="clearMemory">重置记忆</button>
+      </div>
     </section>
 
     <footer class="foot">Desktop AI Pet v0.1 · 本地行为系统永远在线，AI 只是它的灵魂</footer>
@@ -903,5 +1007,52 @@ const SPECIES_CARDS: { id: Species; name: string; emoji: string; avatar: string 
 }
 input[type='range'] {
   accent-color: #ff7a59;
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mem-actions {
+  display: flex;
+  gap: 8px;
+}
+.mem-actions .ghost {
+  border: 1px solid #e8d9cf;
+  background: #fff;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: #3d2e26;
+  cursor: pointer;
+}
+.mem-actions .ghost:hover {
+  border-color: #ff7a59;
+  color: #ff7a59;
+}
+.chip {
+  border: 1px solid #e8d9cf;
+  background: #fff;
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #3d2e26;
+  cursor: pointer;
+}
+.chip.active {
+  border-color: #ff7a59;
+  color: #ff7a59;
+  background: #fff4ef;
+}
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px #e3d5ca;
+  cursor: pointer;
+}
+.swatch.active {
+  box-shadow: 0 0 0 2px #ff7a59;
 }
 </style>

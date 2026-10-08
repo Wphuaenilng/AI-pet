@@ -219,6 +219,7 @@ export class PetAnimation {
     speed: number
     eyeDX: number
     eyeDY: number
+    food: { dx: number; dy: number } | null
   }): Pose {
     const talking = this.talkT > 0 && Math.sin(this.talkT) > 0
     return {
@@ -241,6 +242,7 @@ export class PetAnimation {
       }),
       squash: this.squash,
       particles: this.particles,
+      food: arg.food,
       eyeClosed: this.eyeClosed,
     }
   }

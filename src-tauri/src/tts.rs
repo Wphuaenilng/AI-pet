@@ -21,21 +21,27 @@ fn b64(data: &[u8]) -> String {
 // 同时实现单飞：新话语到来时打断上一句，避免多个 PowerShell 并发叠音
 static SPEAKING: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
 
+// async 命令在运行时线程池执行，不再占主线程/事件循环（附录 B2）
+// M4：style 绑定人格——温柔型语速放慢选第一个中文语音，务实型加快选最后一个
 #[tauri::command]
-pub fn tts_speak(text: String) -> Result<(), String> {
+pub async fn tts_speak(text: String, style: Option<String>) -> Result<(), String> {
     let t: String = text.trim().chars().take(200).collect();
     if t.is_empty() {
         return Ok(());
     }
     let safe = t.replace('\'', "''");
+    let (rate, pick) = match style.as_deref() {
+        Some("practical") => (2, "-Last 1"),
+        _ => (0, "-First 1"),
+    };
     // 失败要可见：不再 SilentlyContinue 一刀切，出错写 stderr（由下方线程转发到日志）
     let script = format!(
         "try {{ \
          Add-Type -AssemblyName System.Speech; \
          $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; \
-         $v=$s.GetInstalledVoices() | Where-Object {{$_.VoiceInfo.Culture.Name -like 'zh*'}} | Select-Object -First 1; \
+         $v=$s.GetInstalledVoices() | Where-Object {{$_.VoiceInfo.Culture.Name -like 'zh*'}} | Select-Object {pick}; \
          if($v){{$s.SelectVoice($v.VoiceInfo.Name)}}else{{[Console]::Error.WriteLine('未安装中文语音，已回退默认语音')}}; \
-         $s.Rate=1; $s.Volume=100; $s.Speak('{}') \
+         $s.Rate={rate}; $s.Volume=100; $s.Speak('{}') \
          }} catch {{ [Console]::Error.WriteLine($_.Exception.Message) }}",
         safe
     );
@@ -62,11 +68,19 @@ pub fn tts_speak(text: String) -> Result<(), String> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd.stderr(std::process::Stdio::piped());
-    let mut guard = SPEAKING.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(prev) = guard.as_mut() {
-        // 上一句还在读：打断并回收其句柄
-        let _ = prev.kill();
-        let _ = prev.wait();
+    // 单飞：kill 本身很快，在锁内完成；wait() 要等进程退出，拿到锁外
+    // 用独立线程回收，避免阻塞命令线程（曾卡主线程数百 ms，附录 B2）
+    let prev = {
+        let mut guard = SPEAKING.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = guard.as_mut() {
+            let _ = prev.kill();
+        }
+        guard.take()
+    };
+    if let Some(mut prev) = prev {
+        std::thread::spawn(move || {
+            let _ = prev.wait();
+        });
     }
     match cmd.spawn() {
         Ok(mut child) => {
@@ -82,9 +96,18 @@ pub fn tts_speak(text: String) -> Result<(), String> {
                     }
                 });
             }
-            *guard = Some(child);
+            *SPEAKING.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
             Ok(())
         }
         Err(e) => Err(format!("TTS 启动失败: {e}")),
+    }
+}
+
+/// 应用退出时调用：终止还在播报的子进程，避免孤儿 PowerShell 继续出声（附录 B2）
+pub fn kill_speaking() {
+    let child = SPEAKING.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(mut c) = child {
+        let _ = c.kill();
+        let _ = c.wait();
     }
 }

@@ -1,4 +1,5 @@
 // 人格系统：温柔型 / 务实型 + 离线台词库
+import type { ExprKind } from '../pet/PetState'
 import type { PersonalityId, Species } from '../lib/tauri'
 
 export interface PersonalityProfile {
@@ -26,17 +27,25 @@ export const PERSONALITIES: Record<PersonalityId, PersonalityProfile> = {
   },
 }
 
-export function speciesLabel(s: Species): string {
-  switch (s) {
-    case 'cat':
-      return '小橘猫'
-    case 'bunny':
-      return '小白兔'
-    case 'fox':
-      return '小狐狸'
-    case 'dot':
-      return '小黑豆'
-  }
+/** 单宠物化（整改 D2）：物种标签恒为小黑点 */
+export function speciesLabel(_s: Species): string {
+  return '小黑点'
+}
+
+/**
+ * 本地情绪估计（M4 双通道兜底）：关键词规则，零依赖、离线可用。
+ * LLM 不可用、返回越界或缺失时，用它兜底用户的文字情绪；
+ * AI 自己回复的情绪仍以结构化输出为准。
+ */
+export function localEmotion(text: string): ExprKind {
+  if (/哈哈|太好了|开心|好耶|喜欢|好玩|棒/.test(text)) return 'happy'
+  if (/气死|生气|讨厌|可恶/.test(text)) return 'angry'
+  if (/难过|伤心|委屈|压力|崩溃/.test(text)) return 'sad'
+  if (/吓|惊|怎么会|？！|\?!/.test(text)) return 'surprised'
+  if (/困|睡着|熬夜/.test(text)) return 'sleepy'
+  if (/累|加班|辛苦|烦/.test(text)) return 'sad'
+  if (/担心|小心|注意|别忘了/.test(text)) return 'concern'
+  return 'neutral'
 }
 
 export type CannedKind =
@@ -51,6 +60,10 @@ export type CannedKind =
   | 'landOops'
   | 'summoned'
   | 'dropped'
+  | 'hungry'
+  | 'foodDrop'
+  | 'eating'
+  | 'busy'
 
 export const CANNED: Record<PersonalityId, Record<CannedKind, string[]>> = {
   gentle: {
@@ -65,6 +78,10 @@ export const CANNED: Record<PersonalityId, Record<CannedKind, string[]>> = {
     landOops: ['哇，差点摔到，还好我软软的', '没事没事，我很轻盈的～'],
     summoned: ['我回来啦！有没有想我呀', '召唤我有什么事嘛？'],
     dropped: ['哇啊！谢谢你接住我', '呼，安全落地～'],
+    hungry: ['肚子咕咕叫了……有没有好吃的呀？', '我饿了嘛，投喂我一下好不好？', '饿饿，饭饭，快来投喂我～'],
+    foodDrop: ['哇！是好吃的！', '来了来了！我来了！', '等等我，别抢，是我的！'],
+    eating: ['唔唔，好好吃！', '谢谢你投喂我～', '吃饱啦，满足！'],
+    busy: ['窗口切来切去的，在忙什么呀？', '看起来你在多线作战哦，需要我陪着吗？'],
   },
   practical: {
     welcome: ['已就位。需要时叫我。', '我是{name}，开始工作吧。', '桌面巡检完毕，没有异常。'],
@@ -78,6 +95,10 @@ export const CANNED: Record<PersonalityId, Record<CannedKind, string[]>> = {
     landOops: ['落地稳定。', '下次注意点。'],
     summoned: ['在。说事。', '我一直在，是你没看托盘。'],
     dropped: ['落地完成。', '下次轻点放。'],
+    hungry: ['能量不足，建议投喂。', '饿了。这影响输出质量。'],
+    foodDrop: ['检测到补给，接收。'],
+    eating: ['补给完成，效率恢复。', '味道……不错。'],
+    busy: ['窗口切换频繁。建议：先关掉无关的。', '多任务进行中，需要计时提醒吗？'],
   },
 }
 

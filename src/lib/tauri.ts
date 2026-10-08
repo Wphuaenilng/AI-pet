@@ -100,7 +100,8 @@ export interface WindowInfo {
 }
 
 export type PersonalityId = 'gentle' | 'practical'
-export type Species = 'cat' | 'bunny' | 'fox' | 'dot'
+/** 单宠物化（整改 D2）：唯一物种，旧存档中的 cat/bunny/fox 由 store 归一为 dot */
+export type Species = 'dot'
 
 export interface Settings {
   apiBaseUrl: string
@@ -115,6 +116,16 @@ export interface Settings {
   windowInteract: boolean
   ttsEnabled: boolean
   proactive: boolean
+  /** 强制鼠标穿透：开启后点击穿过宠物（全局热键 Ctrl+Shift+U 可切换） */
+  clickThrough: boolean
+  /** bloub 定制：形状/颜色/静止表情（仅 baseFace 状态可见），id 见 bloub/skins.ts、expressions.ts */
+  bloubShape: string
+  bloubColor: string
+  bloubExpression: string
+  /** Petdex 宠物包（M2）：'' = 默认 bloub；否则为包目录绝对路径 */
+  petPack: string
+  /** 所选包的 spritesheet 绝对路径（与 petPack 一起写入） */
+  petPackSheet: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -123,19 +134,27 @@ export const DEFAULT_SETTINGS: Settings = {
   model: '',
   personality: 'gentle',
   petName: '团子',
-  species: 'cat',
+  species: 'dot',
   scale: 1,
   autoActivity: true,
   trackMouse: true,
   windowInteract: true,
   ttsEnabled: false,
   proactive: true,
+  clickThrough: false,
+  bloubShape: 'cercle',
+  bloubColor: 'encre',
+  bloubExpression: 'attentif',
+  petPack: '',
+  petPackSheet: '',
 }
 
 export interface MemoryData {
   shortTerm: { role: 'user' | 'assistant'; content: string; t: number }[]
   userInfo: { nickname: string; facts: string[] }
   petMemory: { t: number; text: string }[]
+  /** 滚动摘要（M4）：被压缩的旧对话的话题行 */
+  digests: { t: number; text: string }[]
   stats: { totalChats: number; lastInteraction: number }
 }
 
@@ -143,6 +162,7 @@ export const DEFAULT_MEMORY: MemoryData = {
   shortTerm: [],
   userInfo: { nickname: '', facts: [] },
   petMemory: [],
+  digests: [],
   stats: { totalChats: 0, lastInteraction: 0 },
 }
 
@@ -160,6 +180,7 @@ export interface EmotionPayload {
     curiosity: number
     affection: number
     boredom: number
+    hunger: number
   }
   expr: string
   state: string

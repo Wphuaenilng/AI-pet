@@ -43,13 +43,19 @@
         "title": "Desktop AI Pet · 聊天",
         "width": 340,
         "height": 480,
-        "resizable": false,
+        "minWidth": 280,
+        "minHeight": 400,
+        "resizable": true,
         "visible": false,
         "skipTaskbar": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/.petdex/**"]
+      }
     }
   },
   "bundle": {

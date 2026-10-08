@@ -52,6 +52,46 @@ cd src-tauri && cargo build  # 构建 src-tauri/target/debug/desktop-ai-pet.exe
 > ⚠️ 注意：debug 版 exe 启动时会连接 vite dev server（localhost:5199），需要先 `npm run dev`。
 > **release 版完全自包含**（内嵌 dist），双击即可运行，推荐日常使用 `target/release/desktop-ai-pet.exe`。
 
+## 🔌 生态接入（M5）
+
+宠物内置本地桥 `http://127.0.0.1:7788`（仅回环地址），并附带 MCP stdio 桥 `pet-mcp.exe`（构建产物，位于 `src-tauri/target/release/` 或 `debug/`）。
+
+### Claude Code / Cursor（MCP）
+
+```bash
+claude mcp add desktop-pet -- <pet-mcp.exe 的绝对路径>
+```
+
+可用工具：`pet_say`（说话）· `pet_status`（查情绪/饱食度/状态）· `pet_react`（动作）· `pet_event`（build-ok / build-fail / notify 事件）· `approval_request`（发起桌面审批）。
+
+### 让宠物审批编码代理的操作（实验性）
+
+在 Claude Code 的 hooks（`~/.claude/settings.json`）中添加：
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "<pet-mcp.exe 的绝对路径> hook" }] }
+    ]
+  }
+}
+```
+
+触发审批时宠物会弹出横幅：全局快捷键 **Ctrl+Shift+Y 允许 / Ctrl+Shift+N 拒绝**，或直接点横幅按钮；超时 120 秒按拒绝处理。
+
+### HTTP 桥（脚本 / CI 直接调）
+
+```text
+POST /say    {"text": "..."}
+POST /react  {"action": "dance"}
+POST /event  {"kind": "build-ok|build-fail|notify", "message": "..."}
+POST /approval     {"title": "...", "detail": "..."}   -> {"id"}
+POST /approval/decide  {"id", "decision": "allowed|denied"}
+GET  /approval/poll?id=...                                 -> {"status": "pending|allowed|denied"}
+GET  /status
+```
+
 ## 🤖 配置 AI
 
 托盘菜单 → **设置** → AI 配置：

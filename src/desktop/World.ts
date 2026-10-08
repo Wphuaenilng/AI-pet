@@ -2,6 +2,7 @@
 import {
   invoke,
   isTauri,
+  listen,
   type CursorInfo,
   type DesktopInfo,
   type MonitorInfo,
@@ -26,6 +27,8 @@ export class World {
   cursorMovedAt = 0
   private timer = 0
   private cursorTimer = 0
+  private cursorUnlisten: (() => void) | null = null
+  private lastDesktopJson = ''
   private previewOffs: (() => void)[] = []
   private onCursorMove?: (x: number, y: number) => void
 
@@ -67,23 +70,34 @@ export class World {
       return
     }
     await this.refresh()
+    // B5：桌面信息 1s 轮询 + 内容 diff（长期方案是 SetWinEventHook 增量维护）
     this.timer = window.setInterval(() => {
       this.refresh().catch(() => {})
-    }, 600)
+    }, 1000)
+    // B3：Rust 侧 ~125Hz 采样、变化时推送；前端 250ms 轮询仅作丢事件兜底
+    this.cursorUnlisten = await listen<CursorInfo>('desktop://cursor', (c) => this.applyCursor(c))
+    invoke<CursorInfo>('get_cursor_pos')
+      .then((c) => {
+        if (c) this.applyCursor(c)
+      })
+      .catch(() => {})
     this.cursorTimer = window.setInterval(() => {
       invoke<CursorInfo>('get_cursor_pos')
         .then((c) => {
-          if (!c) return
-          const moved = c.x !== this.cursor.x || c.y !== this.cursor.y
-          this.cursor = { x: c.x, y: c.y }
-          this.cursorLeftDown = c.left_down
-          if (moved) {
-            this.cursorMovedAt = performance.now()
-            this.onCursorMove?.(c.x, c.y)
-          }
+          if (c) this.applyCursor(c)
         })
         .catch(() => {})
-    }, 32)
+    }, 250)
+  }
+
+  private applyCursor(c: CursorInfo): void {
+    const moved = c.x !== this.cursor.x || c.y !== this.cursor.y
+    this.cursor = { x: c.x, y: c.y }
+    this.cursorLeftDown = c.left_down
+    if (moved) {
+      this.cursorMovedAt = performance.now()
+      this.onCursorMove?.(c.x, c.y)
+    }
   }
 
   stop(): void {
@@ -91,6 +105,8 @@ export class World {
     if (this.cursorTimer) clearInterval(this.cursorTimer)
     this.timer = 0
     this.cursorTimer = 0
+    this.cursorUnlisten?.()
+    this.cursorUnlisten = null
     for (const off of this.previewOffs) off()
     this.previewOffs = []
   }
@@ -98,6 +114,10 @@ export class World {
   async refresh(): Promise<void> {
     const info = await invoke<DesktopInfo>('get_desktop_info')
     if (!info) return
+    // B5：内容没变就不替换引用，避免下游每帧遍历的数据无谓翻新
+    const json = JSON.stringify(info)
+    if (json === this.lastDesktopJson) return
+    this.lastDesktopJson = json
     if (info.monitors.length) this.monitors = info.monitors
     this.windows = info.windows
     this.taskbar = info.taskbar

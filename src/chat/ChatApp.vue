@@ -33,28 +33,10 @@ const lastEmotion = ref<EmotionPayload | null>(null)
 const unlistens: (() => void)[] = []
 
 // 宠物窗口离线/未启动时的兜底值
-const FALLBACK_EMOTION = { happiness: 65, energy: 80, curiosity: 55, affection: 45, boredom: 20 }
+const FALLBACK_EMOTION = { happiness: 65, energy: 80, curiosity: 55, affection: 45, boredom: 20, hunger: 70 }
 
-const avatar = computed(() => {
-  const s = settings.value
-  if (!s) return ''
-  if (s.species === 'fox') return 'avatars/pet-fox.png'
-  if (s.species === 'cat') return 'avatars/pet-cream.png'
-  return ''
-})
-const speciesEmoji = computed(() => {
-  const s = settings.value
-  switch (s?.species) {
-    case 'bunny':
-      return '🐰'
-    case 'fox':
-      return '🦊'
-    case 'dot':
-      return '⚫'
-    default:
-      return '🐱'
-  }
-})
+const avatar = computed(() => '')
+const speciesEmoji = computed(() => '⚫')
 
 onMounted(async () => {
   try {
@@ -150,7 +132,7 @@ async function send() {
         emotion: emo?.values ?? FALLBACK_EMOTION,
         expr: (emo?.expr as ExprKind) ?? 'neutral',
         state: emo?.state ?? 'TALK',
-        memory: memory.value.snapshot(),
+        memory: await memory.value.snapshot(),
       })
       const history: ChatMsg[] = [
         { role: 'system', content: sys },
@@ -205,7 +187,7 @@ async function send() {
       <div class="head-text">
         <div class="pet-name">{{ settings?.petName ?? '宠物' }}</div>
         <div class="pet-sub">
-          {{ speciesLabel(settings?.species ?? 'cat') }}
+          {{ speciesLabel(settings?.species ?? 'dot') }}
           <span v-if="!settings?.apiBaseUrl" class="offline-chip">离线陪聊</span>
         </div>
       </div>

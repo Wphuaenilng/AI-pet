@@ -16,8 +16,8 @@ export class Selector extends BtNode {
   tick(ctx: any): BtResult {
     for (const c of this.children) {
       const r = c.tick(ctx)
-      // Sequence 返回 'success' 表示条件满足但内部未产出 Goal，
-      // 继续看后续分支，不要把 'success' 冒泡给外层 Selector
+      // 只在拿到 Goal 时收手；'failure' 换下一个分支，
+      // 'success'（纯条件 Sequence）也不产出目标，同样继续
       if (r === 'failure' || r === 'success') continue
       return r
     }
@@ -33,6 +33,10 @@ export class Sequence extends BtNode {
     for (const c of this.children) {
       const r = c.tick(ctx)
       if (r === 'failure') return 'failure'
+      // 条件满足后子 Act 产出的 Goal 必须向上冒泡，
+      // 否则会被下面的 return 'success' 吞掉（附录 B1：曾导致规划器所有
+      // Sequence 分支的目标丢失，宠物退化成只会发呆）
+      if (r !== 'success') return r
     }
     return 'success'
   }

@@ -1,4 +1,4 @@
-// 系统托盘：聊天/暂停/召唤/换宠/设置/隐藏/退出
+// 系统托盘：聊天/暂停/召唤/设置/隐藏/退出（"更换宠物"随单宠物化移除）
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -44,9 +44,9 @@ pub fn toggle_paused(app: AppHandle) -> bool {
 
 pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
     let chat = MenuItem::with_id(&app, "chat", "聊天", true, None::<&str>)?;
+    let feed = MenuItem::with_id(&app, "feed", "投喂", true, None::<&str>)?;
     let pause = MenuItem::with_id(&app, "pause", "暂停宠物", true, None::<&str>)?;
     let summon = MenuItem::with_id(&app, "summon", "重新召唤", true, None::<&str>)?;
-    let change = MenuItem::with_id(&app, "change-pet", "更换宠物", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(&app)?;
     let settings = MenuItem::with_id(&app, "settings", "设置", true, None::<&str>)?;
     let hide = MenuItem::with_id(&app, "hide", "隐藏宠物", true, None::<&str>)?;
@@ -55,7 +55,7 @@ pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
 
     let menu = Menu::with_items(
         &app,
-        &[&chat, &pause, &summon, &change, &sep1, &settings, &hide, &sep2, &quit],
+        &[&chat, &feed, &pause, &summon, &sep1, &settings, &hide, &sep2, &quit],
     )?;
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon_32.png"))?;
@@ -92,8 +92,9 @@ pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
                 let _ = crate::window::show_window_impl(app, "pet");
                 let _ = app.emit("tray://summon", ());
             }
-            "change-pet" => {
-                let _ = app.emit("tray://change-pet", ());
+            "feed" => {
+                let _ = crate::window::show_window_impl(app, "pet");
+                let _ = app.emit("tray://feed", ());
             }
             "hide" => {
                 if let Some(pet) = app.get_webview_window("pet") {

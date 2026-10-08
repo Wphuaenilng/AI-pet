@@ -377,3 +377,37 @@ export class EnterGoal implements Goal {
     return this.settle > 1.6 ? 'done' : 'running'
   }
 }
+
+export class SeekFoodGoal implements Goal {
+  readonly label = nid('seekFood')
+  private phase: 'approach' | 'eat' = 'approach'
+  private t = 0
+  private eatT = 0
+  constructor(private brain: PetBrain) {}
+  start(): void {
+    this.phase = 'approach'
+    this.t = 0
+    this.eatT = 0
+  }
+  update(dt: number): 'running' | 'done' {
+    this.t += dt
+    const f = this.brain.food
+    if (!f || this.t > 20) return 'done'
+    if (this.phase === 'approach') {
+      const r = this.brain.walkStep(dt, f.x, 95, false)
+      const near = Math.abs(this.brain.pet.x - f.x) < 30 * this.brain.u
+      if (r === 'arrived' || near) {
+        this.phase = 'eat'
+        this.brain.setPose('HAPPY')
+      }
+      return 'running'
+    }
+    // 进食 1.4s：爱心+星光，然后由 finishEat 结算数值并清掉食物
+    this.eatT += dt
+    if (this.eatT > 1.4) {
+      this.brain.finishEat()
+      return 'done'
+    }
+    return 'running'
+  }
+}
