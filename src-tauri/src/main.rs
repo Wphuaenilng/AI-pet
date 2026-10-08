@@ -110,6 +110,7 @@ fn main() {
                 .unwrap_or_else(|_| std::env::temp_dir());
             let _ = std::fs::create_dir_all(&log_dir);
             let panic_log = log_dir.join("panic.log");
+            let panic_log_for_hook = panic_log.clone();
             std::panic::set_hook(Box::new(move |info| {
                 eprintln!("{info}");
                 let ts = std::time::SystemTime::now()
@@ -120,9 +121,31 @@ fn main() {
                 let _ = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open(&panic_log)
+                    .open(&panic_log_for_hook)
                     .and_then(|mut f| std::io::Write::write_all(&mut f, msg.as_bytes()));
             }));
+            // 异常退出检测（附录 A.1）：正常退出会走 RunEvent::Exit 删掉 running.flag；
+            // 崩溃 / 被杀 / 断电导致 flag 残留，下次启动时让宠物气泡告知用户
+            let run_flag = log_dir.join("running.flag");
+            let abnormal_exit = run_flag.exists();
+            let _ = std::fs::write(&run_flag, b"1");
+            if abnormal_exit {
+                let has_panic = std::fs::read_to_string(&panic_log)
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                let text = if has_panic {
+                    "上次我不小心摔了一跤（异常退出），崩溃日志已存到 panic.log，但我已经自己爬起来啦～"
+                } else {
+                    "上次我被打断了（异常退出），不过存档都找回来啦～"
+                };
+                let app = app.handle().clone();
+                // 延时发送：等 pet 窗口的 PetBrain 挂载好监听再开口
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    use tauri::Emitter;
+                    let _ = app.emit_to("pet", "pet://say", serde_json::json!({ "text": text }));
+                });
+            }
             // 鼠标事件流（附录 B3）：Rust 侧采样，变化时推送给 pet 窗口
             mouse::start_cursor_stream(app.handle().clone());
             window::init_windows(app.handle().clone());
@@ -159,10 +182,14 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building desktop-ai-pet");
     // RunEvent::Exit：托盘"退出"（app.exit）与正常退出都会走到这里，
-    // 顺手清掉还在播报的 TTS 子进程（附录 B2）
-    app.run(|_app, event| {
+    // 顺手清掉还在播报的 TTS 子进程（附录 B2），并摘掉 running.flag（附录 A.1：
+    // 正常退出清标记；崩溃/被杀/断电时标记残留，下次启动据此提示异常退出）
+    app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
             tts::kill_speaking();
+            if let Ok(dir) = app.path().app_data_dir() {
+                let _ = std::fs::remove_file(dir.join("running.flag"));
+            }
         }
     });
 }

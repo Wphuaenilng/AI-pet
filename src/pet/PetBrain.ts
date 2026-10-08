@@ -397,7 +397,7 @@ export class PetBrain {
     if (import.meta.env.DEV) {
       this.devHeartbeat = window.setInterval(() => {
         this.log(
-          `hb state=${this.fsm.current} goal=${this.goal?.label ?? 'null'} x=${Math.round(this.pet.x)} feetY=${Math.round(this.pet.feetY)} air=${this.pet.airborne} u=${this.u.toFixed(2)} hidden=${document.hidden}`,
+          `hb state=${this.fsm.current} goal=${this.goal?.label ?? 'null'} x=${Math.round(this.pet.x)} feetY=${Math.round(this.pet.feetY)} air=${this.pet.airborne} u=${this.u.toFixed(2)} hidden=${document.hidden} bub=${this.bubble.visible ? 1 : 0}${this.bubble.visible ? ` btext="${this.bubble.text.slice(0, 24)}"` : ''}`,
         )
       }, 3000)
     }
