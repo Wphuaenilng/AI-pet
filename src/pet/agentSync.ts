@@ -24,9 +24,14 @@ export function isAgentKind(kind: string): kind is AgentKind {
 
 export type AgentSource = 'zcode' | 'claude'
 
+/** 归一化来源键：消息列表/冷却按来源隔离，旧事件缺省为 ZCode。 */
+export function agentSourceId(source?: string): AgentSource {
+  return source?.toLowerCase() === 'claude' ? 'claude' : 'zcode'
+}
+
 /** 气泡来源标签；旧钩子/直注事件未带 source 时按最初的 ZCode 适配兼容。 */
 export function agentSourceLabel(source?: string): string {
-  return source?.toLowerCase() === 'claude' ? 'Claude' : 'ZCode'
+  return agentSourceId(source) === 'claude' ? 'Claude' : 'ZCode'
 }
 
 export interface AgentVisual {
@@ -46,10 +51,12 @@ export const AGENT_VISUALS: Record<AgentKind, AgentVisual> = {
   'agent-done': { bloub: 'orbit', row: 'waving' },
 }
 
+export const AGENT_THINKING_HOLD_MS = 600_000
+
 /** 覆盖层保持（秒）：thinking 等不到后续事件时也不能几秒就消失；10 分钟是 Stop 丢失时的兜底。 */
 const MIN_HOLD_S: Record<AgentKind, number> = {
   'agent-session': 4,
-  'agent-thinking': 600,
+  'agent-thinking': AGENT_THINKING_HOLD_MS / 1000,
   'agent-working': 2,
   'agent-tool-ok': 2,
   'agent-failed': 4,
@@ -145,5 +152,65 @@ export class AgentLayer {
     this.lastEventAt = 0
     this.lastBubbleAt = {}
     this.toolOkStreak = 0
+  }
+}
+
+export interface AgentMessage {
+  id: number
+  source: AgentSource
+  kind: AgentKind
+  text: string
+  /** thinking 使用 10 分钟状态兜底；普通消息按阅读时长过期 */
+  until: number
+}
+
+/** 并发代理消息中心：每个来源独立的决策层 + 可并存的消息列表（纯逻辑，可单测）。 */
+export class AgentMessageCenter {
+  private layers: Record<AgentSource, AgentLayer> = {
+    zcode: new AgentLayer(),
+    claude: new AgentLayer(),
+  }
+  private items: AgentMessage[] = []
+  private nextId = 1
+
+  get size(): number {
+    return this.items.length
+  }
+
+  ingest(kind: AgentKind, source: AgentSource, now: number): AgentDecision {
+    return this.layers[source].ingest(kind, now)
+  }
+
+  add(kind: AgentKind, source: AgentSource, text: string, now: number): void {
+    const duration =
+      kind === 'agent-thinking'
+        ? AGENT_THINKING_HOLD_MS
+        : Math.max(2400, Math.min(9000, 1500 + text.length * 170))
+    this.items.push({ id: this.nextId++, source, kind, text, until: now + duration })
+    // 窗口最多舒适容纳 6 条；超出时丢弃最旧的一条，折叠按钮始终保留计数视图。
+    if (this.items.length > 6) this.items.shift()
+  }
+
+  /** 只清理同一来源的思考消息，另一个代理不受影响。 */
+  clearThinking(source: AgentSource): boolean {
+    const before = this.items.length
+    this.items = this.items.filter((m) => m.source !== source || m.kind !== 'agent-thinking')
+    return this.items.length !== before
+  }
+
+  expire(now: number): boolean {
+    const before = this.items.length
+    this.items = this.items.filter((m) => now <= m.until)
+    return this.items.length !== before
+  }
+
+  list(): AgentMessage[] {
+    return this.items.map((m) => ({ ...m }))
+  }
+
+  reset(): void {
+    this.layers.zcode.reset()
+    this.layers.claude.reset()
+    this.items = []
   }
 }

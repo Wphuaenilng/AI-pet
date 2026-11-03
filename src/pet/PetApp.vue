@@ -7,6 +7,7 @@ import { DEMI_VIEWBOX, RAYON } from './bloub/repere'
 import PetAtlas from './PetAtlas.vue'
 import { ATLAS_H, DOT_R } from './metrics'
 import { getLabel, invoke, isTauri, listen } from '../lib/tauri'
+import type { AgentMessage } from './agentSync'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const bubble = ref<BubbleState>({ visible: false, text: '', bottom: 0 })
@@ -14,6 +15,12 @@ const menu = ref<PetMenuState>(null)
 const brain = ref<PetBrain | null>(null)
 const preview = !isTauri
 const mockWindow = ref<{ x: number; y: number; w: number; h: number } | null>(null)
+// M6 并发代理消息：独立列表，不与普通单气泡混用
+const agentMessages = ref<AgentMessage[]>([])
+const agentCollapsed = ref(false)
+const agentBottom = computed(() => Math.max(bubble.value.bottom, 90))
+// 小尺寸宠物窗口也必须完整露出工具栏；装不下的卡片在列表内滚动。
+const agentListMax = computed(() => Math.max(42, window.innerHeight - agentBottom.value - 36))
 // M5 审批横幅（Claude Code hooks / HTTP 桥发起，快捷键 Y/N 或按钮决策）
 const approval = ref<{ id: string; title: string; detail?: string } | null>(null)
 let approvalUnlisten: (() => void) | null = null
@@ -35,6 +42,18 @@ watch(approval, async (v) => {
   if (!el) return
   const r = el.getBoundingClientRect()
   brain.value?.setApprovalRect({ x: r.x, y: r.y, w: r.width, h: r.height })
+})
+
+// 列表高度和折叠状态都会改变命中区域；每次 DOM 更新后同步给 brain。
+watch([agentMessages, agentCollapsed], async () => {
+  await nextTick()
+  const el = document.querySelector('.agent-center')
+  if (!el || agentMessages.value.length === 0) {
+    brain.value?.setAgentRect(null)
+    return
+  }
+  const r = el.getBoundingClientRect()
+  brain.value?.setAgentRect({ x: r.x, y: r.y, w: r.width, h: r.height })
 })
 
 // 渲染通道（PetBrain 回调驱动）：bloub 程序化 SVG 或 Petdex 图集
@@ -106,7 +125,11 @@ onMounted(() => {
     (s) => (bubble.value = { ...s }),
     undefined,
     (m) => (menu.value = m),
-    (p) => (bloub.value = p)
+    (p) => (bloub.value = p),
+    (messages) => {
+      agentMessages.value = messages
+      if (messages.length === 0) agentCollapsed.value = false
+    }
   )
   brain.value = b
   // 全局视线：PetBrain 每帧把光标方向注入 bloub 引擎
@@ -184,6 +207,30 @@ function menuHidePet() {
         {{ bubble.text }}
       </div>
     </transition>
+
+    <!-- M6 并发代理消息：每个来源、每次提问各占一张卡片，不再互顶 -->
+    <div
+      v-if="agentMessages.length"
+      class="agent-center"
+      :style="{ bottom: agentBottom + 'px', '--agent-list-max': agentListMax + 'px' }"
+    >
+      <div class="agent-toolbar">
+        <span v-if="!agentCollapsed">代理消息 {{ agentMessages.length }}</span>
+        <button type="button" @click="agentCollapsed = !agentCollapsed">
+          {{ agentCollapsed ? `展开 (${agentMessages.length})` : '收起' }}
+        </button>
+      </div>
+      <div v-show="!agentCollapsed" class="agent-list">
+        <div
+          v-for="m in agentMessages"
+          :key="m.id"
+          class="agent-message"
+          :class="m.source"
+        >
+          {{ m.text }}
+        </div>
+      </div>
+    </div>
 
     <!-- M5 审批横幅：编码代理等待审批时弹出，快捷键 Y/N 或按钮决策 -->
     <div v-if="approval" class="approval">
@@ -263,6 +310,65 @@ function menuHidePet() {
   line-height: 1.5;
   text-align: center;
   word-break: break-word;
+}
+.agent-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  width: min(360px, calc(100vw - 16px));
+  pointer-events: auto;
+}
+.agent-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-bottom: 4px;
+  color: #8c7a6e;
+  font-size: 11px;
+}
+.agent-toolbar button {
+  border: 1px solid #e8d9cf;
+  border-radius: 8px;
+  padding: 3px 9px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 8px rgba(60, 50, 45, 0.12);
+  color: #66574f;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.agent-toolbar button:hover {
+  border-color: #9b8578;
+  background: #fff;
+}
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(170px, var(--agent-list-max));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.agent-message {
+  padding: 7px 11px;
+  border: 1.5px solid;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(60, 50, 45, 0.16);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+  word-break: break-word;
+}
+.agent-message.zcode {
+  color: #24547d;
+  background: rgba(235, 246, 255, 0.97);
+  border-color: #77b5e8;
+}
+.agent-message.claude {
+  color: #8a4a25;
+  background: rgba(255, 243, 232, 0.97);
+  border-color: #e8a16f;
 }
 .bubble-pop-enter-active,
 .bubble-pop-leave-active {

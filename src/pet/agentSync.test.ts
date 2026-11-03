@@ -1,6 +1,12 @@
 // M6 聊天感知覆盖层单测（整改计划 §9.3-2 滞回与去抖规则）
 import { describe, expect, it } from 'vitest'
-import { AgentLayer, AGENT_VISUALS, agentSourceLabel, isAgentKind } from './agentSync'
+import {
+  AgentLayer,
+  AgentMessageCenter,
+  AGENT_VISUALS,
+  agentSourceLabel,
+  isAgentKind,
+} from './agentSync'
 
 describe('isAgentKind', () => {
   it('识别 6 个 agent-* kind，拒绝其他', () => {
@@ -153,5 +159,44 @@ describe('M6-P2 PostToolUse 低频摘要', () => {
     l.ingest('agent-tool-ok', 2000)
     l.reset()
     expect(l.ingest('agent-tool-ok', 3000).bubble).toBe(false)
+  })
+})
+
+describe('AgentMessageCenter 并发消息', () => {
+  it('ZCode 与 Claude 思考消息并存，同来源连续提问也保留', () => {
+    const c = new AgentMessageCenter()
+    c.add('agent-thinking', 'zcode', 'ZCode：第一个问题', 1000)
+    c.add('agent-thinking', 'zcode', 'ZCode：第二个问题', 1100)
+    c.add('agent-thinking', 'claude', 'Claude：也在思考', 1200)
+    expect(c.list().map((m) => m.text)).toEqual([
+      'ZCode：第一个问题',
+      'ZCode：第二个问题',
+      'Claude：也在思考',
+    ])
+  })
+
+  it('状态切换只清理对应来源的思考消息', () => {
+    const c = new AgentMessageCenter()
+    c.add('agent-thinking', 'zcode', 'ZCode：思考中', 1000)
+    c.add('agent-thinking', 'claude', 'Claude：思考中', 1100)
+    expect(c.clearThinking('zcode')).toBe(true)
+    expect(c.list().map((m) => m.source)).toEqual(['claude'])
+    expect(c.clearThinking('zcode')).toBe(false)
+  })
+
+  it('气泡决策按来源隔离，同 kind 不互相冷却', () => {
+    const c = new AgentMessageCenter()
+    expect(c.ingest('agent-thinking', 'zcode', 1000).bubble).toBe(true)
+    expect(c.ingest('agent-thinking', 'claude', 1100).bubble).toBe(true)
+  })
+
+  it('普通消息按阅读时长过期，思考消息有长兜底', () => {
+    const c = new AgentMessageCenter()
+    c.add('agent-done', 'zcode', '完成', 1000)
+    c.add('agent-thinking', 'claude', '思考中', 1000)
+    expect(c.expire(5000)).toBe(true)
+    expect(c.list().map((m) => m.kind)).toEqual(['agent-thinking'])
+    expect(c.expire(601_001)).toBe(true)
+    expect(c.size).toBe(0)
   })
 })

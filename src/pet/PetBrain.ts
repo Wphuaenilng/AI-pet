@@ -21,7 +21,15 @@ import { behaviorWeights, pickWeighted } from '../behavior/weights'
 import { StateMachine, type PetFsmState } from '../behavior/StateMachine'
 import { World } from '../desktop/World'
 import { pickCanned, type CannedKind } from '../ai/Personality'
-import { AgentLayer, agentSourceLabel, isAgentKind, type AgentKind } from './agentSync'
+import {
+  AgentLayer,
+  AgentMessageCenter,
+  agentSourceId,
+  agentSourceLabel,
+  isAgentKind,
+  type AgentKind,
+  type AgentMessage,
+} from './agentSync'
 import { PetAnimation } from './PetAnimation'
 import { PetRenderer } from './PetRenderer'
 import { EmotionSystem, type ExprKind } from './PetState'
@@ -157,12 +165,14 @@ export class PetBrain {
   private headTiltTarget = 0
   private speedNow = 0
 
-  // M6 聊天感知：ZCode 编码代理事件覆盖层（纯逻辑在 agentSync.ts）
+  // M6 聊天感知：视觉仍是最新事件覆盖层；消息列表与气泡决策按来源隔离
   private agentLayer = new AgentLayer()
+  private agentMessages = new AgentMessageCenter()
   /** 最近一次聊天活动时间（含 AI 流式回复）：agent 视觉避让 5s（§9.5） */
   private lastChatAt = 0
-  /** M5 审批横幅的 css 矩形（PetApp 同步）：命中判定用，null = 无横幅 */
+  /** M5 审批横幅 / M6 代理消息列表的物理像素矩形：命中判定用 */
   private approvalRect: { x: number; y: number; w: number; h: number } | null = null
+  private agentRect: { x: number; y: number; w: number; h: number } | null = null
   // M3 贴边 Mini：拖到屏幕左右边缘后缩起（pet.x 屏外化，窗口映射自然裁剪），悬停/审批探出
   private mini: { side: 'left' | 'right'; m: MonitorInfo } | null = null
   private miniPeeking = false
@@ -174,7 +184,9 @@ export class PetBrain {
     private onStateChange?: (s: PetFsmState) => void,
     private onMenu?: (m: PetMenuState) => void,
     /** bloub 渲染通道：状态/表情/外观变化时通知 Vue 层（PetApp） */
-    private onBloub?: (p: BloubPayload) => void
+    private onBloub?: (p: BloubPayload) => void,
+    /** 并发代理消息列表：与普通单气泡分离，ZCode / Claude 不再互顶 */
+    private onAgentMessages?: (messages: AgentMessage[]) => void
   ) {
     this.renderer = new PetRenderer(canvas)
     this.world = new World(!isTauri)
@@ -475,6 +487,8 @@ export class PetBrain {
     if (!this.bubble.visible && this.bubbleQueue.length > 0) {
       this.showNextBubble(t)
     }
+    // 与 onAgentEvent 写入 until 共用同一时钟，避免普通短卡片被动画帧时间戳立即清掉。
+    if (this.agentMessages.expire(this.now())) this.syncAgentMessages()
     if (
       this.bubble.visible &&
       !this.paused &&
@@ -1073,33 +1087,30 @@ export class PetBrain {
     ) {
       return
     }
-    // 思考提示跟状态走：进入执行/完成/失败后立刻撤掉，不等普通气泡计时。
-    if (kind !== 'agent-thinking') this.clearTaggedBubble('agent-thinking')
-    const d = this.agentLayer.ingest(kind, now)
-    const label = agentSourceLabel(source)
-    // 气泡先行：tool-ok 摘要气泡与跃迁无关（合并续期时也可能到摘要节奏）
-    if (d.bubble) {
-      if (d.kind === 'agent-tool-ok') {
-        this.say(`${label}：已连续 ${d.summary ?? 3} 步顺利，稳～`)
-      } else {
-        const lineKind: Partial<Record<AgentKind, CannedKind>> = {
-          'agent-session': 'agentStart',
-          'agent-thinking': 'agentThinking',
-          'agent-failed': 'agentFailed',
-          'agent-done': 'agentDone',
-        }
-        const ck = lineKind[d.kind]
-        if (ck) {
-          if (d.kind === 'agent-thinking') this.clearTaggedBubble('agent-thinking')
-          this.say(
-            `${label}：${this.pickCanned(ck)}`,
-            d.kind === 'agent-thinking'
-              ? { durationMs: Math.max(2400, d.until - now), tag: 'agent-thinking' }
-              : {},
-          )
-        }
-      }
+    const sourceId = agentSourceId(source)
+    // 只结束当前来源的思考；另一个代理的卡片继续保留。
+    if (kind !== 'agent-thinking' && this.agentMessages.clearThinking(sourceId)) {
+      this.syncAgentMessages()
     }
+    const d = this.agentLayer.ingest(kind, now) // 最新事件驱动视觉
+    const md = this.agentMessages.ingest(kind, sourceId, now) // 消息决策按来源隔离
+    const label = agentSourceLabel(sourceId)
+    let text: string | null = null
+    // 每次提问和低频次状态都保留卡片；只有高频工具成功仍按摘要节奏提示。
+    if (kind === 'agent-thinking') {
+      text = `${label}：${this.pickCanned('agentThinking')}`
+    } else if (kind === 'agent-tool-ok') {
+      if (md.bubble) text = `${label}：已连续 ${md.summary ?? 3} 步顺利，稳～`
+    } else {
+      const lineKind: Partial<Record<AgentKind, CannedKind>> = {
+        'agent-session': 'agentStart',
+        'agent-failed': 'agentFailed',
+        'agent-done': 'agentDone',
+      }
+      const ck = lineKind[kind]
+      if (ck) text = `${label}：${this.pickCanned(ck)}`
+    }
+    if (text) this.pushAgentMessage(kind, sourceId, text, now)
     if (!d.transitioned) return
     switch (d.kind) {
       case 'agent-session':
@@ -1118,6 +1129,20 @@ export class PetBrain {
       default:
         break
     }
+  }
+
+  private pushAgentMessage(kind: AgentKind, source: 'zcode' | 'claude', text: string, now: number): void {
+    this.agentMessages.add(kind, source, text, now)
+    this.syncAgentMessages()
+    // 与普通 say 一样尊重 TTS 开关，但代理卡片不占有聊天气泡/FSM。
+    if (this.settings.ttsEnabled && isTauri) {
+      void invoke('tts_speak', { text, style: this.settings.personality }).catch(() => {})
+    }
+  }
+
+  private syncAgentMessages(): void {
+    this.onAgentMessages?.(this.agentMessages.list())
+    this.pushBubble() // 同步最新头顶高度，PetApp 用它对齐代理消息列表底边
   }
 
   /** 覆盖视觉是否可作用于该 FSM 状态：物理/移动/进入状态不覆盖（§9.3-3） */
@@ -1175,7 +1200,8 @@ export class PetBrain {
     this.settings = { ...this.settings, agentSync: on }
     if (!on) {
       this.agentLayer.reset()
-      this.clearTaggedBubble('agent-thinking')
+      this.agentMessages.reset()
+      this.syncAgentMessages()
     }
     void import('../store').then(({ saveSettings }) => saveSettings(this.settings))
     void invoke('set_tray_agentsync', { checked: on }).catch(() => {})
@@ -1223,17 +1249,6 @@ export class PetBrain {
       tag: opts.tag,
     })
     if (this.bubbleQueue.length > 2) this.bubbleQueue.shift()
-  }
-
-  /** 撤掉指定状态气泡（含尚未显示的排队项），不影响其他聊天/通知。 */
-  private clearTaggedBubble(tag: string): void {
-    this.bubbleQueue = this.bubbleQueue.filter((item) => item.tag !== tag)
-    if (!this.bubble.visible || this.bubbleTag !== tag) return
-    this.bubble = { visible: false, text: '', bottom: 0 }
-    this.bubbleTag = null
-    this.bubbleUntil = 0
-    this.pushBubble()
-    if (this.fsm.current === 'TALK') this.setPose('IDLE')
   }
 
   /** 脚底到头顶的可视高度（css·scale）：bloub 是直径 68 的球，petdex 图集是 ATLAS_H 高 */
@@ -1421,8 +1436,8 @@ export class PetBrain {
     const c = this.world.cursor
     const nearEdge = mini.side === 'right' ? c.x > edgeX - 28 : c.x < edgeX + 28
     const inStripY = Math.abs(c.y - (this.pet.feetY - 40 * u)) < 90 * u
-    // 审批/聊天流式必须探出（§9.3-3：审批必须吵到人）
-    if ((nearEdge && inStripY) || this.approvalRect || this.streaming) {
+    // 审批/聊天流式/代理消息必须探出，避免卡片停在屏外
+    if ((nearEdge && inStripY) || this.approvalRect || this.streaming || this.agentMessages.size > 0) {
       this.miniPeeking = true
       this.miniLastHoverT = this.now()
     } else if (this.miniPeeking) {
@@ -1503,15 +1518,19 @@ export class PetBrain {
     const feet = this.winH - PAD_BOTTOM * u
     // dot 只有一颗球，命中框按球来算，别沿用动物形态那 90u 宽、185u 高
     const halfW = 40 * u // 黑点命中框：半径 34u 的球留一点容差
-    // M5/M6 审批横幅：必须可点（§9.3-3 审批优先），且不受 clickThrough 全局穿透影响。
-    // 缺失这段时横幅渲染在穿透窗口上，按钮看得见点不着（2026-11-03 实机踩坑）。
+    // M5/M6 审批横幅与代理消息按钮：必须可点，且不受 clickThrough 全局穿透影响。
+    // 缺失这段时 UI 渲染在穿透窗口上，按钮看得见点不着（2026-11-03 实机踩坑）。
     const ar = this.approvalRect
+    const gr = this.agentRect
     const inApproval =
       !!ar && lx >= ar.x && lx <= ar.x + ar.w && ly >= ar.y && ly <= ar.y + ar.h
+    const inAgentMessages =
+      !!gr && lx >= gr.x && lx <= gr.x + gr.w && ly >= gr.y && ly <= gr.y + gr.h
     const hit =
       this.dragging ||
       this.menuOpen ||
       inApproval ||
+      inAgentMessages ||
       (!this.settings.clickThrough &&
         lx > cx - halfW &&
         lx < cx + halfW &&
@@ -1523,9 +1542,21 @@ export class PetBrain {
     }
   }
 
+  /** DOM 使用 CSS 像素，光标/窗口边界使用物理像素；宠物缩小时两者并不相等。 */
+  private cssHitRect(r: { x: number; y: number; w: number; h: number }) {
+    const cssWidth = this.canvas.clientWidth || this.winW
+    const ratio = this.winW / cssWidth
+    return { x: r.x * ratio, y: r.y * ratio, w: r.w * ratio, h: r.h * ratio }
+  }
+
   /** PetApp 在审批横幅显隐时同步其 css 矩形（相对窗口），供命中判定放行鼠标 */
   setApprovalRect(r: { x: number; y: number; w: number; h: number } | null): void {
-    this.approvalRect = r
+    this.approvalRect = r ? this.cssHitRect(r) : null
+  }
+
+  /** 代理消息列表/收起按钮显隐或尺寸变化时同步命中区域 */
+  setAgentRect(r: { x: number; y: number; w: number; h: number } | null): void {
+    this.agentRect = r ? this.cssHitRect(r) : null
   }
 
   // ---------- 窗口同步 ----------
@@ -1628,7 +1659,8 @@ export class PetBrain {
     void invoke('set_tray_agentsync', { checked: !!s.agentSync }).catch(() => {})
     if (!s.agentSync) {
       this.agentLayer.reset()
-      this.clearTaggedBubble('agent-thinking')
+      this.agentMessages.reset()
+      this.syncAgentMessages()
     }
     if (Math.abs(prevScale - s.scale) > 0.01 && isTauri) {
       void invoke('set_pet_scale', { scale: s.scale }).then(() =>
