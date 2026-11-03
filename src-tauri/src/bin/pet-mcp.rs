@@ -38,6 +38,11 @@ fn tool_defs() -> Value {
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
+                "name": "pet_busyness",
+                "description": "查询宠物/主人当前忙碌度（M6-P3）。busy=true 时请避免 pet_say 等主动打扰：reason=approval-pending（有审批等主人决策）/chatting（主人正与宠物聊天）/dragging（主人正拖拽宠物）/agent-*（编码代理状态联动中）；approval 非空表示有待处理审批",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
                 "name": "pet_react",
                 "description": "让宠物做一个动作",
                 "inputSchema": {
@@ -82,6 +87,13 @@ fn call_tool(params: &Value) -> Value {
     let res: Result<Value, String> = match name {
         "pet_say" => http("POST", "/say", Some(json!({ "text": a.get("text") }))),
         "pet_status" => http("GET", "/status", None),
+        "pet_busyness" => http("GET", "/status", None).map(|v| {
+            let busy = v.get("pet").and_then(|p| p.get("busyness")).cloned();
+            json!({
+                "busyness": busy,
+                "approval": v.get("approval"),
+            })
+        }),
         "pet_react" => http("POST", "/react", Some(json!({ "action": a.get("action") }))),
         "pet_event" => http(
             "POST",

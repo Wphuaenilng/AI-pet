@@ -505,6 +505,7 @@ export class PetBrain {
             expr: payload.expr,
             name: payload.name,
             values: payload.values,
+            busyness: this.busyness(),
           },
         }).catch(() => {})
       }
@@ -1097,6 +1098,20 @@ export class PetBrain {
     }
     const a = this.agentLayer.active(this.now())
     return a && this.settings.agentSync ? a.visual : null
+  }
+
+  /**
+   * M6-P3 忙碌度（/status 快照字段，MCP pet_busyness 数据源）：
+   * 供编码代理在 pet_say / 主动打扰前自查——busy=true 时宠物或主人正有事。
+   */
+  private busyness(): { busy: boolean; reason: string } {
+    if (this.approvalRect) return { busy: true, reason: 'approval-pending' }
+    if (this.dragging) return { busy: true, reason: 'dragging' }
+    if (this.streaming || this.now() - this.lastChatAt < 5000)
+      return { busy: true, reason: 'chatting' }
+    const a = this.agentLayer.active(this.now())
+    if (a && this.settings.agentSync) return { busy: true, reason: a.kind }
+    return { busy: false, reason: 'idle' }
   }
 
   /** 完成提示音（§9.3-5）：WebAudio 双音，静默失败不影响任何逻辑 */
