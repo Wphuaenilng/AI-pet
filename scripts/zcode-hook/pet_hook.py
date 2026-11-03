@@ -8,6 +8,7 @@ process 钩子在事件触发时以 stdin JSON（HookInput）调用本脚本。
 - 任何异常都被吞掉，退出码恒 0，stdout 恒空——宠物绝不能拖垮 ZCode 回合
 - HTTP 超时 500ms，fire-and-forget
 - 本脚本不打印任何日志到 stdout（协议要求 stdout 只出决策 JSON，P1 无决策）
+- 诊断日志只写文件（PET_HOOK_LOG=0 可关）
 
 P1 事件映射（§9.2）：
   SessionStart         → POST /event {kind: agent-session}
@@ -16,15 +17,18 @@ P1 事件映射（§9.2）：
   PostToolUseFailure   → POST /event {kind: agent-failed}
   Stop                 → POST /event {kind: agent-done}
   PermissionRequest    → POST /approval {title, detail}（复用 M5 审批闭环，P2 做决策回写）
-  PostToolUse          → 忽略（P2 低频摘要）
 """
 import json
 import os
 import sys
+import tempfile
 import urllib.request
 
 BRIDGE = os.environ.get("PET_BRIDGE_URL", "http://127.0.0.1:7788")
 TIMEOUT = 0.5
+LOG_ENABLED = os.environ.get("PET_HOOK_LOG", "1") != "0"
+LOG_PATH = os.path.join(tempfile.gettempdir(), "ai-pet-hook.log")
+LOG_MAX = 256 * 1024
 
 EVENT_MAP = {
     "SessionStart": ("event", "agent-session"),
@@ -35,7 +39,20 @@ EVENT_MAP = {
 }
 
 # ZCode 协议字段若升级可能改名，逐个兜底取（§9.5：解析失败静默跳过）
-EVENT_KEYS = ("event", "hook_event_name", "type", "event_name")
+EVENT_KEYS = ("event", "hook_event_name", "hookEventName", "type", "event_name")
+
+
+def log(line):
+    """诊断日志写临时文件（不进 stdout）；超 256KB 清空重写。"""
+    if not LOG_ENABLED:
+        return
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX:
+            os.remove(LOG_PATH)
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def extract_event(data):
@@ -63,6 +80,7 @@ def main():
         if not isinstance(data, dict):
             return
         event = extract_event(data)
+        log(f"event={event!r} keys={sorted(data.keys())}")
         if not event:
             return
         if event == "PermissionRequest":
@@ -76,9 +94,10 @@ def main():
             return
         _path, kind = mapped
         post("/event", {"kind": kind})
+        log(f"posted kind={kind}")
     except BaseException:
-        # 零副作用：任何失败都不影响 ZCode（含 KeyboardInterrupt 之外的系统退出）
-        pass
+        # 零副作用：任何失败都不影响 ZCode
+        log("exception swallowed")
     finally:
         os._exit(0)  # 绕过缓冲刷新，保证不往 stdout 写任何东西
 

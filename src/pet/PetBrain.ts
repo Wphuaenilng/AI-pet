@@ -262,6 +262,12 @@ export class PetBrain {
 
     // 3. 世界 + 事件（先拿显示器数据，用于脚底吸附）
     await this.world.start()
+    // 启动即加载持久化设置（agentSync 等开关的唯一事实源是 settings.json；
+    // settings://updated 只在保存时广播，冷启动的 brain 不能靠默认值硬扛）
+    void import('../store')
+      .then(({ loadSettings }) => loadSettings())
+      .then((s) => this.applySettings(s))
+      .catch(() => {})
     this.log(
       `world started monitors=${this.world.monitors.length} windows=${this.world.windows.length}`,
     )
@@ -1035,7 +1041,7 @@ export class PetBrain {
     if (!this.settings.agentSync) return
     if (this.dragging) return
     if (this.fsm.current === 'SLEEP') return // 睡眠优先（PermissionRequest 走 M5 审批闭环独立通道）
-    const now = Date.now()
+    const now = this.now()
     // 聊天豁免窗（§9.5）：用户对话/AI 回复进行中，agent 弱状态避让 5s
     if (
       (kind === 'agent-thinking' || kind === 'agent-working' || kind === 'agent-session') &&
@@ -1186,7 +1192,7 @@ export class PetBrain {
   /** 气泡副作用统一出口：情绪结算、打断睡觉、TTS、记忆事件 */
   private applyBubbleEffects(item: PetSayPayload): void {
     if (item.fromChat) {
-      this.lastChatAt = Date.now()
+      this.lastChatAt = this.now()
       this.emotion.onChat(item.emotion ?? 'neutral')
       // AI 表达关切时让表情可见（faceFor 的 concern 分支此前不可达）
       if (item.emotion === 'concern') this.emotion.setTransient('concern', 3600, this.now())
@@ -1208,7 +1214,7 @@ export class PetBrain {
   showStream(text: string): void {
     if (!text) return
     this.streaming = true
-    this.lastChatAt = Date.now()
+    this.lastChatAt = this.now()
     this.bubble = { visible: true, text, bottom: 0 }
     this.bubbleUntil = this.now() + 3000
     this.pushBubble()
