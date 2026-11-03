@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { PetBrain, type BloubPayload, type BubbleState, type PetMenuState } from './PetBrain'
 import PetBot from './bloub/PetBot.vue'
@@ -22,6 +22,20 @@ function decide(decision: 'allowed' | 'denied') {
   if (!approval.value) return
   void invoke('approval_decide', { id: approval.value.id, decision })
 }
+
+// 横幅显隐时把它的 css 矩形同步给 brain：窗口命中判定放行该区域，
+// 否则横幅渲染在点击穿透的窗口上，按钮看得见点不着
+watch(approval, async (v) => {
+  if (!v) {
+    brain.value?.setApprovalRect(null)
+    return
+  }
+  await nextTick()
+  const el = document.querySelector('.approval')
+  if (!el) return
+  const r = el.getBoundingClientRect()
+  brain.value?.setApprovalRect({ x: r.x, y: r.y, w: r.width, h: r.height })
+})
 
 // 渲染通道（PetBrain 回调驱动）：bloub 程序化 SVG 或 Petdex 图集
 const botRef = ref<InstanceType<typeof PetBot> | null>(null)

@@ -153,6 +153,8 @@ export class PetBrain {
   private agentLayer = new AgentLayer()
   /** 最近一次聊天活动时间（含 AI 流式回复）：agent 视觉避让 5s（§9.5） */
   private lastChatAt = 0
+  /** M5 审批横幅的 css 矩形（PetApp 同步）：命中判定用，null = 无横幅 */
+  private approvalRect: { x: number; y: number; w: number; h: number } | null = null
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -1370,9 +1372,15 @@ export class PetBrain {
     const feet = this.winH - PAD_BOTTOM * u
     // dot 只有一颗球，命中框按球来算，别沿用动物形态那 90u 宽、185u 高
     const halfW = 40 * u // 黑点命中框：半径 34u 的球留一点容差
+    // M5/M6 审批横幅：必须可点（§9.3-3 审批优先），且不受 clickThrough 全局穿透影响。
+    // 缺失这段时横幅渲染在穿透窗口上，按钮看得见点不着（2026-11-03 实机踩坑）。
+    const ar = this.approvalRect
+    const inApproval =
+      !!ar && lx >= ar.x && lx <= ar.x + ar.w && ly >= ar.y && ly <= ar.y + ar.h
     const hit =
       this.dragging ||
       this.menuOpen ||
+      inApproval ||
       (!this.settings.clickThrough &&
         lx > cx - halfW &&
         lx < cx + halfW &&
@@ -1382,6 +1390,11 @@ export class PetBrain {
       this.interactive = hit
       void invoke('set_pet_ignore_cursor_events', { ignore: !hit }).catch(() => {})
     }
+  }
+
+  /** PetApp 在审批横幅显隐时同步其 css 矩形（相对窗口），供命中判定放行鼠标 */
+  setApprovalRect(r: { x: number; y: number; w: number; h: number } | null): void {
+    this.approvalRect = r
   }
 
   // ---------- 窗口同步 ----------
