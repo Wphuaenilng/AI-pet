@@ -29,11 +29,12 @@ from pathlib import Path
 HOOK_SCRIPT = Path(__file__).resolve().parent / "pet_hook.py"
 CONFIG_PATH = Path.home() / ".zcode" / "cli" / "config.json"
 
-# 6 个事件（P1 映射表 §9.2；PostToolUse 留 P2）
+# 7 个事件（P2 补 PostToolUse：前端低频摘要气泡）
 EVENTS = [
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
+    "PostToolUse",
     "PostToolUseFailure",
     "Stop",
     "PermissionRequest",
@@ -52,9 +53,12 @@ def load_config():
         sys.exit(1)
 
 
-def make_group():
+def make_group(event):
     # 组 schema 只保留 ZCode 认识的键（matcher/hooks）；
-    # process 钩子的超时键是 timeoutMs（毫秒），给足 3s（python 冷启动 + HTTP 500ms）
+    # process 钩子的超时键是 timeoutMs（毫秒）：普通事件 3s（python 冷启动 + HTTP 500ms）；
+    # PermissionRequest 需要等主人在宠物上点决策，给 120s（钩子内轮询预算 110s，
+    # 超时后静默退出，ZCode 默认审批 UI 接管）
+    timeout_ms = 120000 if event == "PermissionRequest" else 3000
     return {
         "matcher": "*",
         "hooks": [
@@ -62,7 +66,7 @@ def make_group():
                 "type": "process",
                 "command": sys.executable,
                 "args": [str(HOOK_SCRIPT)],
-                "timeoutMs": 3000,
+                "timeoutMs": timeout_ms,
             }
         ],
     }
@@ -103,9 +107,9 @@ def cmd_install():
         print("错误：config.json 的 hooks.events 字段不是对象，无法安装。")
         sys.exit(1)
 
-    group = make_group()
     added, updated = [], []
     for name in EVENTS:
+        group = make_group(name)
         lst = events.get(name)
         if lst is None:
             lst = []

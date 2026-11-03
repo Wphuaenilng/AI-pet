@@ -14,14 +14,24 @@ P1 事件映射（§9.2）：
   SessionStart         → POST /event {kind: agent-session}
   UserPromptSubmit     → POST /event {kind: agent-thinking}
   PreToolUse           → POST /event {kind: agent-working}
+  PostToolUse          → POST /event {kind: agent-tool-ok}（P2：前端低频摘要）
   PostToolUseFailure   → POST /event {kind: agent-failed}
   Stop                 → POST /event {kind: agent-done}
-  PermissionRequest    → POST /approval {title, detail}（复用 M5 审批闭环，P2 做决策回写）
+
+P2 审批双向回写（PermissionRequest）：
+  POST /approval 拿 id → 轮询 GET /approval/poll（默认预算 110s，
+  PET_APPROVAL_WAIT_S 可调）→ 主人在宠物横幅/快捷键决策后，stdout 输出
+  {"hookSpecificOutput":{"hookEventName":"PermissionRequest",
+   "decision":{"behavior":"allow"|"deny","message":...}}}
+  （协议经 zcode.cjs 源码确认：z_a/permissionRequestResult 分支）。
+  超时/异常 → stdout 空、exit 0，ZCode 默认审批 UI 照常接管，绝不卡死回合。
+  注意：本事件是唯一允许 stdout 非空的分支（协议要求），其他事件 stdout 恒空。
 """
 import json
 import os
 import sys
 import tempfile
+import time
 import urllib.request
 
 BRIDGE = os.environ.get("PET_BRIDGE_URL", "http://127.0.0.1:7788")
@@ -29,11 +39,14 @@ TIMEOUT = 0.5
 LOG_ENABLED = os.environ.get("PET_HOOK_LOG", "1") != "0"
 LOG_PATH = os.path.join(tempfile.gettempdir(), "ai-pet-hook.log")
 LOG_MAX = 256 * 1024
+# 审批等待预算：须小于 install.py 给 PermissionRequest 的 timeoutMs（120s）
+APPROVAL_WAIT_S = float(os.environ.get("PET_APPROVAL_WAIT_S", "110"))
 
 EVENT_MAP = {
     "SessionStart": ("event", "agent-session"),
     "UserPromptSubmit": ("event", "agent-thinking"),
     "PreToolUse": ("event", "agent-working"),
+    "PostToolUse": ("event", "agent-tool-ok"),
     "PostToolUseFailure": ("event", "agent-failed"),
     "Stop": ("event", "agent-done"),
 }
@@ -70,7 +83,60 @@ def post(path, payload):
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        resp.read()
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+def get_json(path):
+    with urllib.request.urlopen(BRIDGE + path, timeout=TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+def pick(data, *keys):
+    """ZCode 同时发驼峰/蛇形双命名字段，逐个兜底取。"""
+    for k in keys:
+        v = data.get(k)
+        if v:
+            return v
+    return None
+
+
+def emit_decision(behavior, message=None):
+    """PermissionRequest 决策回写（唯一允许 stdout 输出的路径），写完必须 flush。"""
+    decision = {"behavior": behavior}
+    if message:
+        decision["message"] = message
+    out = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+    sys.stdout.write(json.dumps(out, ensure_ascii=False))
+    sys.stdout.flush()
+    log(f"decision written behavior={behavior}")
+
+
+def handle_permission(data):
+    tool = pick(data, "toolName", "tool_name", "tool") or ""
+    tool_input = pick(data, "toolInput", "tool_input")
+    detail = str(tool)
+    if tool_input is not None:
+        detail += " " + json.dumps(tool_input, ensure_ascii=False)
+    resp = post("/approval", {"title": "ZCode 请求许可", "detail": detail[:200]})
+    approval_id = (resp or {}).get("id") or ""
+    if not approval_id:
+        return  # 没拿到 id：静默退出，ZCode 默认审批接管
+    log(f"approval posted id={approval_id}")
+    deadline = time.monotonic() + APPROVAL_WAIT_S
+    while time.monotonic() < deadline:
+        time.sleep(1.0)
+        try:
+            r = get_json(f"/approval/poll?id={approval_id}")
+        except BaseException:
+            continue  # 单次轮询失败（宠物重启中等）不致命，继续等到预算用尽
+        status = (r or {}).get("status")
+        if status == "allowed":
+            emit_decision("allow")
+            return
+        if status == "denied":
+            emit_decision("deny", "主人在桌面宠物上拒绝了这次操作")
+            return
+    log("approval wait timeout, fallback to ZCode default UI")
 
 
 def main():
@@ -84,10 +150,7 @@ def main():
         if not event:
             return
         if event == "PermissionRequest":
-            tool = data.get("tool_name") or data.get("tool") or ""
-            title = "ZCode 请求许可"
-            detail = str(tool)[:120]
-            post("/approval", {"title": title, "detail": detail})
+            handle_permission(data)
             return
         mapped = EVENT_MAP.get(event)
         if not mapped:
@@ -99,7 +162,11 @@ def main():
         # 零副作用：任何失败都不影响 ZCode
         log("exception swallowed")
     finally:
-        os._exit(0)  # 绕过缓冲刷新，保证不往 stdout 写任何东西
+        try:
+            sys.stdout.flush()  # os._exit 绕过缓冲刷新，决策 JSON 必须先落管道
+        except BaseException:
+            pass
+        os._exit(0)
 
 
 if __name__ == "__main__":

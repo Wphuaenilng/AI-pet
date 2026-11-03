@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { AgentLayer, AGENT_VISUALS, isAgentKind } from './agentSync'
 
 describe('isAgentKind', () => {
-  it('识别 5 个 agent-* kind，拒绝其他', () => {
+  it('识别 6 个 agent-* kind，拒绝其他', () => {
     expect(isAgentKind('agent-session')).toBe(true)
     expect(isAgentKind('agent-thinking')).toBe(true)
     expect(isAgentKind('agent-working')).toBe(true)
+    expect(isAgentKind('agent-tool-ok')).toBe(true)
     expect(isAgentKind('agent-failed')).toBe(true)
     expect(isAgentKind('agent-done')).toBe(true)
     expect(isAgentKind('build-ok')).toBe(false)
@@ -86,5 +87,64 @@ describe('AgentLayer 滞回', () => {
     expect(l.active(1000)).toBeNull()
     const d = l.ingest('agent-done', 2000)
     expect(d.transitioned).toBe(true)
+  })
+})
+
+describe('M6-P2 PostToolUse 低频摘要', () => {
+  it('tool-ok 视觉复用 working 轻量映射', () => {
+    expect(AGENT_VISUALS['agent-tool-ok']).toEqual({ bloub: 'comet', row: 'review' })
+  })
+
+  it('连续 3 次成功才泡第一次摘要，带次数', () => {
+    const l = new AgentLayer()
+    expect(l.ingest('agent-tool-ok', 1000).bubble).toBe(false)
+    expect(l.ingest('agent-tool-ok', 2000).bubble).toBe(false)
+    const third = l.ingest('agent-tool-ok', 3000)
+    expect(third.bubble).toBe(true)
+    expect(third.summary).toBe(3)
+  })
+
+  it('摘要与合并窗口无关：1s 内连续成功也按节奏泡', () => {
+    const l = new AgentLayer()
+    l.ingest('agent-tool-ok', 1000)
+    l.ingest('agent-tool-ok', 1500)
+    const third = l.ingest('agent-tool-ok', 2000)
+    expect(third.transitioned).toBe(false) // 合并续期
+    expect(third.bubble).toBe(true) // 摘要照发
+  })
+
+  it('摘要 30s 冷却：第 6 次在冷却内不泡，冷却后的倍数节点再泡', () => {
+    const l = new AgentLayer()
+    l.ingest('agent-tool-ok', 1000)
+    l.ingest('agent-tool-ok', 2000)
+    l.ingest('agent-tool-ok', 3000) // 首次摘要 @3000
+    l.ingest('agent-tool-ok', 4000)
+    l.ingest('agent-tool-ok', 5000)
+    expect(l.ingest('agent-tool-ok', 6000).bubble).toBe(false) // 倍数但冷却内
+    expect(l.ingest('agent-tool-ok', 40_000).bubble).toBe(false) // 第 7 次非倍数
+    expect(l.ingest('agent-tool-ok', 41_000).bubble).toBe(false) // 第 8 次非倍数
+    const ninth = l.ingest('agent-tool-ok', 42_000)
+    expect(ninth.bubble).toBe(true)
+    expect(ninth.summary).toBe(9)
+  })
+
+  it('失败/完成等其他事件打断连续计数', () => {
+    const l = new AgentLayer()
+    l.ingest('agent-tool-ok', 1000)
+    l.ingest('agent-tool-ok', 2000)
+    l.ingest('agent-failed', 3000)
+    expect(l.ingest('agent-tool-ok', 4000).bubble).toBe(false) // 重新计 1
+    expect(l.ingest('agent-tool-ok', 5000).bubble).toBe(false) // 重新计 2
+    const d = l.ingest('agent-tool-ok', 6000)
+    expect(d.bubble).toBe(true) // 重新计 3
+    expect(d.summary).toBe(3)
+  })
+
+  it('reset 同时清空连续计数', () => {
+    const l = new AgentLayer()
+    l.ingest('agent-tool-ok', 1000)
+    l.ingest('agent-tool-ok', 2000)
+    l.reset()
+    expect(l.ingest('agent-tool-ok', 3000).bubble).toBe(false)
   })
 })

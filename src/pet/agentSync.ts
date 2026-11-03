@@ -1,12 +1,19 @@
 // M6 聊天感知：ZCode 编码代理事件 → 宠物视觉/台词决策（纯逻辑层，可单测）
 // 设计约束见整改计划 §9.3：同 kind 1s 内合并、状态最短保持、气泡只在跃迁时发一次。
 
-export type AgentKind = 'agent-session' | 'agent-thinking' | 'agent-working' | 'agent-failed' | 'agent-done'
+export type AgentKind =
+  | 'agent-session'
+  | 'agent-thinking'
+  | 'agent-working'
+  | 'agent-tool-ok'
+  | 'agent-failed'
+  | 'agent-done'
 
 export const AGENT_KINDS: readonly AgentKind[] = [
   'agent-session',
   'agent-thinking',
   'agent-working',
+  'agent-tool-ok',
   'agent-failed',
   'agent-done',
 ]
@@ -22,11 +29,12 @@ export interface AgentVisual {
   row: string
 }
 
-/** kind → 视觉映射（整改计划 §9.2 映射表） */
+/** kind → 视觉映射（整改计划 §9.2 映射表；tool-ok 与 working 同为轻量工作视觉） */
 export const AGENT_VISUALS: Record<AgentKind, AgentVisual> = {
   'agent-session': { bloub: 'notify', row: 'waving' },
   'agent-thinking': { bloub: 'thinking', row: 'waiting' },
   'agent-working': { bloub: 'comet', row: 'review' },
+  'agent-tool-ok': { bloub: 'comet', row: 'review' },
   'agent-failed': { bloub: 'hexagon', row: 'failed' },
   'agent-done': { bloub: 'orbit', row: 'waving' },
 }
@@ -36,6 +44,7 @@ const MIN_HOLD_S: Record<AgentKind, number> = {
   'agent-session': 4,
   'agent-thinking': 8,
   'agent-working': 2,
+  'agent-tool-ok': 2,
   'agent-failed': 4,
   'agent-done': 5,
 }
@@ -46,6 +55,11 @@ const BUBBLE_COOLDOWN_S = 8
 /** 同 kind 合并窗口（秒，§9.3-2 同一 kind 1s 内合并） */
 const MERGE_WINDOW_S = 1
 
+/** M6-P2 PostToolUse 低频摘要：每累计这么多次连续工具成功才允许一次摘要气泡 */
+const TOOL_OK_SUMMARY_EVERY = 3
+/** 摘要气泡自身冷却（秒）：高频工具流里摘要也不能刷屏 */
+const TOOL_OK_SUMMARY_COOLDOWN_S = 30
+
 export interface AgentDecision {
   kind: AgentKind
   visual: AgentVisual
@@ -53,8 +67,10 @@ export interface AgentDecision {
   until: number
   /** 本次是否状态跃迁（false = 同 kind 合并续期；气泡只在跃迁时发） */
   transitioned: boolean
-  /** 本次跃迁是否允许配气泡（同 kind 8s 冷却；working 恒 false，由调用方决定） */
+  /** 本次跃迁是否允许配气泡（同 kind 8s 冷却；working 恒 false；tool-ok 走摘要规则） */
   bubble: boolean
+  /** M6-P2：仅 agent-tool-ok 摘要气泡时携带——本次摘要的连续工具成功次数 */
+  summary?: number
 }
 
 export class AgentLayer {
@@ -62,6 +78,8 @@ export class AgentLayer {
   private lastKind: AgentKind | null = null
   private lastEventAt = 0
   private lastBubbleAt: Partial<Record<AgentKind, number>> = {}
+  /** 连续工具成功计数（任何非 tool-ok 事件都会打断） */
+  private toolOkStreak = 0
 
   /** 摄入一个 agent-* 事件；返回 null 表示未知 kind（调用方先过滤） */
   ingest(kind: AgentKind, now: number): AgentDecision {
@@ -70,6 +88,7 @@ export class AgentLayer {
       this.lastKind === kind && now - this.lastEventAt < MERGE_WINDOW_S * 1000
     this.lastKind = kind
     this.lastEventAt = now
+    this.toolOkStreak = kind === 'agent-tool-ok' ? this.toolOkStreak + 1 : 0
     let transitioned = true
     if (merged && this.current && this.current.kind === kind) {
       this.current.until = Math.max(this.current.until, now + hold)
@@ -78,14 +97,26 @@ export class AgentLayer {
       this.current = { kind, until: now + hold }
     }
     let bubble = false
-    if (transitioned && kind !== 'agent-working') {
+    let summary: number | undefined
+    if (kind === 'agent-tool-ok') {
+      // M6-P2 低频摘要：每满 3 次连续成功且过 30s 冷却才泡一次，与跃迁/合并无关
+      const last = this.lastBubbleAt[kind] ?? -Infinity
+      if (
+        this.toolOkStreak % TOOL_OK_SUMMARY_EVERY === 0 &&
+        now - last >= TOOL_OK_SUMMARY_COOLDOWN_S * 1000
+      ) {
+        bubble = true
+        summary = this.toolOkStreak
+        this.lastBubbleAt[kind] = now
+      }
+    } else if (transitioned && kind !== 'agent-working') {
       const last = this.lastBubbleAt[kind] ?? -Infinity
       if (now - last >= BUBBLE_COOLDOWN_S * 1000) {
         bubble = true
         this.lastBubbleAt[kind] = now
       }
     }
-    return { kind, visual: AGENT_VISUALS[kind], until: now + hold, transitioned, bubble }
+    return { kind, visual: AGENT_VISUALS[kind], until: now + hold, transitioned, bubble, summary }
   }
 
   /** 当前生效的覆盖视觉；已过期或未摄入返回 null */
@@ -106,5 +137,6 @@ export class AgentLayer {
     this.lastKind = null
     this.lastEventAt = 0
     this.lastBubbleAt = {}
+    this.toolOkStreak = 0
   }
 }

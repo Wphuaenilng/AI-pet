@@ -1044,12 +1044,30 @@ export class PetBrain {
     const now = this.now()
     // 聊天豁免窗（§9.5）：用户对话/AI 回复进行中，agent 弱状态避让 5s
     if (
-      (kind === 'agent-thinking' || kind === 'agent-working' || kind === 'agent-session') &&
+      (kind === 'agent-thinking' ||
+        kind === 'agent-working' ||
+        kind === 'agent-tool-ok' ||
+        kind === 'agent-session') &&
       now - this.lastChatAt < 5000
     ) {
       return
     }
     const d = this.agentLayer.ingest(kind, now)
+    // 气泡先行：tool-ok 摘要气泡与跃迁无关（合并续期时也可能到摘要节奏）
+    if (d.bubble) {
+      if (d.kind === 'agent-tool-ok') {
+        this.say(`已连续 ${d.summary ?? 3} 步顺利，稳～`)
+      } else {
+        const lineKind: Partial<Record<AgentKind, CannedKind>> = {
+          'agent-session': 'agentStart',
+          'agent-thinking': 'agentThinking',
+          'agent-failed': 'agentFailed',
+          'agent-done': 'agentDone',
+        }
+        const ck = lineKind[d.kind]
+        if (ck) this.say(this.pickCanned(ck))
+      }
+    }
     if (!d.transitioned) return
     switch (d.kind) {
       case 'agent-session':
@@ -1067,15 +1085,6 @@ export class PetBrain {
         break
       default:
         break
-    }
-    if (d.bubble) {
-      const lineKind: Record<string, CannedKind> = {
-        'agent-session': 'agentStart',
-        'agent-thinking': 'agentThinking',
-        'agent-failed': 'agentFailed',
-        'agent-done': 'agentDone',
-      }
-      this.say(this.pickCanned(lineKind[d.kind]))
     }
   }
 
