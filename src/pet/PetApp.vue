@@ -19,8 +19,11 @@ const mockWindow = ref<{ x: number; y: number; w: number; h: number } | null>(nu
 const agentMessages = ref<AgentMessage[]>([])
 const agentCollapsed = ref(false)
 const agentBottom = computed(() => Math.max(bubble.value.bottom, 90))
-// 小尺寸宠物窗口也必须完整露出工具栏；装不下的卡片在列表内滚动。
-const agentListMax = computed(() => Math.max(42, window.innerHeight - agentBottom.value - 36))
+const contentOffset = computed(() => bubble.value.offsetX ?? 0)
+const contentTransform = computed(
+  () => `translateX(calc(-50% + ${contentOffset.value}px))`,
+)
+const agentControlSide = computed(() => bubble.value.controlSide ?? 'right')
 // M5 审批横幅（Claude Code hooks / HTTP 桥发起，快捷键 Y/N 或按钮决策）
 const approval = ref<{ id: string; title: string; detail?: string } | null>(null)
 let approvalUnlisten: (() => void) | null = null
@@ -44,16 +47,28 @@ watch(approval, async (v) => {
   brain.value?.setApprovalRect({ x: r.x, y: r.y, w: r.width, h: r.height })
 })
 
-// 列表高度和折叠状态都会改变命中区域；每次 DOM 更新后同步给 brain。
-watch([agentMessages, agentCollapsed], async () => {
+// 卡片高度、折叠、左右侧和内移都会改变命中区域；同步卡片与圆钮的联合矩形。
+watch([agentMessages, agentCollapsed, contentOffset, agentControlSide], async () => {
   await nextTick()
-  const el = document.querySelector('.agent-center')
-  if (!el || agentMessages.value.length === 0) {
+  const elements = document.querySelectorAll('.agent-center, .agent-toggle')
+  if (!elements.length || agentMessages.value.length === 0) {
     brain.value?.setAgentRect(null)
     return
   }
-  const r = el.getBoundingClientRect()
-  brain.value?.setAgentRect({ x: r.x, y: r.y, w: r.width, h: r.height })
+  const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity }
+  elements.forEach((el) => {
+    const r = el.getBoundingClientRect()
+    bounds.left = Math.min(bounds.left, r.left)
+    bounds.top = Math.min(bounds.top, r.top)
+    bounds.right = Math.max(bounds.right, r.right)
+    bounds.bottom = Math.max(bounds.bottom, r.bottom)
+  })
+  brain.value?.setAgentRect({
+    x: bounds.left,
+    y: bounds.top,
+    w: bounds.right - bounds.left,
+    h: bounds.bottom - bounds.top,
+  })
 })
 
 // 渲染通道（PetBrain 回调驱动）：bloub 程序化 SVG 或 Petdex 图集
@@ -68,6 +83,9 @@ const bloub = ref<BloubPayload>({
   packSheet: '',
   row: 'idle'
 })
+const agentToggleBottom = computed(
+  () => 8 * bloub.value.scale + ((bloub.value.pack ? ATLAS_H : DOT_R * 2) * bloub.value.scale) / 2,
+)
 /** 黑点半径取 metrics.DOT_R；SVG 需容纳轨道环（DEMI_VIEWBOX/RAYON 倍） */
 const botSize = computed(
   () => Math.round((2 * DEMI_VIEWBOX * DOT_R * bloub.value.scale) / RAYON)
@@ -203,23 +221,21 @@ function menuHidePet() {
     </div>
     <canvas ref="canvasRef" class="pet-canvas" />
     <transition name="bubble-pop">
-      <div v-if="bubble.visible" class="bubble" :style="{ bottom: bubble.bottom + 'px' }">
+      <div
+        v-if="bubble.visible"
+        class="bubble"
+        :style="{ bottom: bubble.bottom + 'px', transform: contentTransform }"
+      >
         {{ bubble.text }}
       </div>
     </transition>
 
-    <!-- M6 并发代理消息：每个来源、每次提问各占一张卡片，不再互顶 -->
+    <!-- 消息向上自然排列，最新一条最靠近宠物；圆钮始终留在宠物身侧。 -->
     <div
       v-if="agentMessages.length"
       class="agent-center"
-      :style="{ bottom: agentBottom + 'px', '--agent-list-max': agentListMax + 'px' }"
+      :style="{ bottom: agentBottom + 'px', transform: contentTransform }"
     >
-      <div class="agent-toolbar">
-        <span v-if="!agentCollapsed">代理消息 {{ agentMessages.length }}</span>
-        <button type="button" @click="agentCollapsed = !agentCollapsed">
-          {{ agentCollapsed ? `展开 (${agentMessages.length})` : '收起' }}
-        </button>
-      </div>
       <div v-show="!agentCollapsed" class="agent-list">
         <div
           v-for="m in agentMessages"
@@ -231,6 +247,18 @@ function menuHidePet() {
         </div>
       </div>
     </div>
+    <button
+      v-if="agentMessages.length"
+      type="button"
+      class="agent-toggle"
+      :class="agentControlSide"
+      :style="{ bottom: agentToggleBottom + 'px' }"
+      :aria-label="agentCollapsed ? '展开代理消息' : '收起代理消息'"
+      @click="agentCollapsed = !agentCollapsed"
+    >
+      <span v-if="agentCollapsed" class="agent-count">{{ agentMessages.length }}</span>
+      <span v-else class="agent-chevron">⌄</span>
+    </button>
 
     <!-- M5 审批横幅：编码代理等待审批时弹出，快捷键 Y/N 或按钮决策 -->
     <div v-if="approval" class="approval">
@@ -319,36 +347,46 @@ function menuHidePet() {
   width: min(360px, calc(100vw - 16px));
   pointer-events: auto;
 }
-.agent-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
-  margin-bottom: 4px;
-  color: #8c7a6e;
-  font-size: 11px;
-}
-.agent-toolbar button {
-  border: 1px solid #e8d9cf;
-  border-radius: 8px;
-  padding: 3px 9px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 2px 8px rgba(60, 50, 45, 0.12);
-  color: #66574f;
-  font-size: 11.5px;
+.agent-toggle {
+  position: absolute;
+  z-index: 26;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(110, 100, 92, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 3px 10px rgba(60, 50, 45, 0.18);
+  color: #746860;
   cursor: pointer;
+  pointer-events: auto;
 }
-.agent-toolbar button:hover {
+.agent-toggle.left {
+  left: calc(50% - 88px);
+}
+.agent-toggle.right {
+  left: calc(50% + 58px);
+}
+.agent-toggle:hover {
   border-color: #9b8578;
   background: #fff;
+}
+.agent-count {
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-chevron {
+  margin-top: -4px;
+  font-size: 22px;
+  line-height: 1;
 }
 .agent-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-height: min(170px, var(--agent-list-max));
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  gap: 8px;
+  overflow: visible;
 }
 .agent-message {
   padding: 7px 11px;

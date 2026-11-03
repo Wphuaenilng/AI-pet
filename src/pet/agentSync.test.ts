@@ -5,6 +5,7 @@ import {
   AgentMessageCenter,
   AGENT_VISUALS,
   agentSourceLabel,
+  inwardOffset,
   isAgentKind,
 } from './agentSync'
 
@@ -198,5 +199,13 @@ describe('AgentMessageCenter 并发消息', () => {
     expect(c.list().map((m) => m.kind)).toEqual(['agent-thinking'])
     expect(c.expire(601_001)).toBe(true)
     expect(c.size).toBe(0)
+  })
+})
+
+describe('屏幕边缘内移', () => {
+  it('中间不偏移，左缘向右、右缘向左', () => {
+    expect(inwardOffset(1000, 0, 2560, 300)).toBe(0)
+    expect(inwardOffset(60, 0, 2560, 300)).toBe(98)
+    expect(inwardOffset(2500, 0, 2560, 300)).toBe(-98)
   })
 })

@@ -26,6 +26,7 @@ import {
   AgentMessageCenter,
   agentSourceId,
   agentSourceLabel,
+  inwardOffset,
   isAgentKind,
   type AgentKind,
   type AgentMessage,
@@ -82,6 +83,10 @@ export interface BubbleState {
   text: string
   /** 气泡底边距窗口底边的 CSS 像素：贴着头顶，不随窗口大小固定在顶部 */
   bottom: number
+  /** 靠近屏幕边缘时向内的 CSS 像素偏移，普通气泡与代理卡片共用 */
+  offsetX?: number
+  /** 圆钮位于宠物朝屏幕内侧的一边 */
+  controlSide?: 'left' | 'right'
 }
 
 interface BubbleItem extends PetSayPayload {
@@ -1256,11 +1261,24 @@ export class PetBrain {
     return (this.settings.petPack ? ATLAS_H : DOT_R * 2) * this.u
   }
 
-  /** 气泡底边贴着头顶算：窗口几何是物理像素、DOM 是 CSS 像素，按 dpr 折算 */
+  /** 气泡底边贴着头顶算；靠边时普通气泡与代理卡片一起向屏幕内侧移动。 */
   private pushBubble(): void {
     const dpr = this.dpr > 0 ? this.dpr : 1
     const bottom = Math.max(0, (PAD_BOTTOM * this.u + this.headRoom()) / dpr) + 24
-    this.onBubble({ ...this.bubble, bottom })
+    const cssWidth = this.canvas.clientWidth || this.winW
+    const physicalPerCss = this.winW / cssWidth
+    const contentWidth = Math.min(380 * physicalPerCss, this.winW - 16 * physicalPerCss)
+    const m = this.monitor
+    const offsetPhysical = m
+      ? inwardOffset(this.winX + this.winW / 2, m.x, m.x + m.w, contentWidth, 8 * this.u)
+      : 0
+    const controlSide = m && this.pet.x > m.x + m.w / 2 ? 'left' : 'right'
+    this.onBubble({
+      ...this.bubble,
+      bottom,
+      offsetX: offsetPhysical / physicalPerCss,
+      controlSide,
+    })
   }
 
   private showNextBubble(t: number): void {
@@ -1571,6 +1589,8 @@ export class PetBrain {
     const wy = this.pet.feetY - this.winH + PAD_BOTTOM * this.u
     this.winX = wx
     this.winY = wy
+    // 拖动/贴边过程中也持续更新气泡内移量和圆钮左右侧，不等下一条消息。
+    if (this.bubble.visible || this.agentMessages.size > 0) this.pushBubble()
     if (Math.abs(wx - this.lastSent.x) < 0.5 && Math.abs(wy - this.lastSent.y) < 0.5) {
       this.posDirty = false
       return

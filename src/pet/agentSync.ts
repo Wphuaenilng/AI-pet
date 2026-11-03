@@ -155,6 +155,20 @@ export class AgentLayer {
   }
 }
 
+/** 将窗口中心的内容钳回屏幕可见范围；返回物理像素偏移，左右边缘对称。 */
+export function inwardOffset(
+  windowCenter: number,
+  monitorStart: number,
+  monitorEnd: number,
+  contentWidth: number,
+  margin = 8,
+): number {
+  const minCenter = monitorStart + margin + contentWidth / 2
+  const maxCenter = monitorEnd - margin - contentWidth / 2
+  if (minCenter > maxCenter) return (monitorStart + monitorEnd) / 2 - windowCenter
+  return Math.max(minCenter, Math.min(maxCenter, windowCenter)) - windowCenter
+}
+
 export interface AgentMessage {
   id: number
   source: AgentSource
