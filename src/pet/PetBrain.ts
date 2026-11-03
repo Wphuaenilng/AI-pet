@@ -133,6 +133,7 @@ export class PetBrain {
   private winY = 0
   private overlaySizeTarget: { width: number; height: number } | null = null
   private overlaySizeInFlight = false
+  private overlayResizeAfter = 0
   private overlayWidthSent = 0
   private overlayHeightSent = 0
 
@@ -1401,8 +1402,11 @@ export class PetBrain {
   private onPointerUp(): void {
     if (!this.dragging) return
     this.dragging = false
-    // 松手后应用拖拽期间保留的最新覆盖层尺寸，避免补算过期测量值。
-    if (this.overlaySizeTarget !== null && !this.overlaySizeInFlight) void this.syncOverlaySize()
+    // Mini 归位与扩窗不能同时抢改原生窗口；待位置稳定后只应用最新尺寸。
+    this.overlayResizeAfter = performance.now() + 900
+    this.later(() => {
+      if (this.overlaySizeTarget !== null && !this.overlaySizeInFlight) void this.syncOverlaySize()
+    }, 900)
     try {
       this.canvas.style.cursor = 'pointer'
     } catch {
@@ -1583,18 +1587,22 @@ export class PetBrain {
     this.agentRect = r ? this.cssHitRect(r) : null
   }
 
-  /** PetApp 测量覆盖内容所需 CSS 尺寸；拖拽时只保留最新目标，避免扩窗与定位竞争。 */
+  private overlayResizeBlocked(): boolean {
+    return this.dragging || this.pet.airborne || performance.now() < this.overlayResizeAfter
+  }
+
+  /** PetApp 测量覆盖内容所需 CSS 尺寸；移动时只保留最新目标，避免扩窗与定位竞争。 */
   setOverlaySize(contentWidth: number, contentHeight: number): void {
     if (!isTauri) return
     this.overlaySizeTarget = { width: contentWidth, height: contentHeight }
-    if (!this.overlaySizeInFlight && !this.dragging) void this.syncOverlaySize()
+    if (!this.overlaySizeInFlight && !this.overlayResizeBlocked()) void this.syncOverlaySize()
   }
 
   private async syncOverlaySize(): Promise<void> {
-    if (this.overlaySizeInFlight || this.dragging) return
+    if (this.overlaySizeInFlight || this.overlayResizeBlocked()) return
     this.overlaySizeInFlight = true
     try {
-      while (this.overlaySizeTarget !== null && !this.stopped && !this.dragging) {
+      while (this.overlaySizeTarget !== null && !this.stopped && !this.overlayResizeBlocked()) {
         const requested = this.overlaySizeTarget
         this.overlaySizeTarget = null
         const baseWidth = PET_W * this.settings.scale
