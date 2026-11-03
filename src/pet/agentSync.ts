@@ -22,6 +22,13 @@ export function isAgentKind(kind: string): kind is AgentKind {
   return (AGENT_KINDS as readonly string[]).includes(kind)
 }
 
+export type AgentSource = 'zcode' | 'claude'
+
+/** 气泡来源标签；旧钩子/直注事件未带 source 时按最初的 ZCode 适配兼容。 */
+export function agentSourceLabel(source?: string): string {
+  return source?.toLowerCase() === 'claude' ? 'Claude' : 'ZCode'
+}
+
 export interface AgentVisual {
   /** bloub 引擎状态 id（stateFor 返回值的覆盖） */
   bloub: string
@@ -39,10 +46,10 @@ export const AGENT_VISUALS: Record<AgentKind, AgentVisual> = {
   'agent-done': { bloub: 'orbit', row: 'waving' },
 }
 
-/** 覆盖层最短保持（秒，§9.3-2 状态最短保持）：此期间无新事件也不消失 */
+/** 覆盖层保持（秒）：thinking 等不到后续事件时也不能几秒就消失；10 分钟是 Stop 丢失时的兜底。 */
 const MIN_HOLD_S: Record<AgentKind, number> = {
   'agent-session': 4,
-  'agent-thinking': 8,
+  'agent-thinking': 600,
   'agent-working': 2,
   'agent-tool-ok': 2,
   'agent-failed': 4,

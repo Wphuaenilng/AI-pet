@@ -91,7 +91,8 @@ fn handle(app: &AppHandle, method: &str, url: &str, body: &str) -> (String, u16)
             let v = parse_body(body);
             let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("").to_string();
             let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            emit(app, "pet://external-event", json!({ "kind": kind, "message": message }));
+            let source = v.get("source").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            emit(app, "pet://external-event", json!({ "kind": kind, "message": message, "source": source }));
             (ok(json!({})), 200)
         }
         ("GET", "/status") => {

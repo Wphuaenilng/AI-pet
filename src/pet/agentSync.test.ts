@@ -1,6 +1,6 @@
 // M6 聊天感知覆盖层单测（整改计划 §9.3-2 滞回与去抖规则）
 import { describe, expect, it } from 'vitest'
-import { AgentLayer, AGENT_VISUALS, isAgentKind } from './agentSync'
+import { AgentLayer, AGENT_VISUALS, agentSourceLabel, isAgentKind } from './agentSync'
 
 describe('isAgentKind', () => {
   it('识别 6 个 agent-* kind，拒绝其他', () => {
@@ -72,12 +72,19 @@ describe('AgentLayer 滞回', () => {
     expect(l.ingest('agent-failed', 21_000).bubble).toBe(true)
   })
 
-  it('最短保持：thinking 覆盖 8s 后才过期', () => {
+  it('thinking 长思考不消失，10 分钟兜底过期', () => {
     const l = new AgentLayer()
     l.ingest('agent-thinking', 1000)
     expect(l.active(1000)?.kind).toBe('agent-thinking')
-    expect(l.active(8000)?.kind).toBe('agent-thinking')
-    expect(l.active(9001)).toBeNull() // 1000 + 8000 到期
+    expect(l.active(18_000)?.kind).toBe('agent-thinking') // 截图中的 17s 场景
+    expect(l.active(601_000)?.kind).toBe('agent-thinking')
+    expect(l.active(601_001)).toBeNull()
+  })
+
+  it('消息来源显示 Claude / ZCode，兼容未带 source 的旧钩子', () => {
+    expect(agentSourceLabel('claude')).toBe('Claude')
+    expect(agentSourceLabel('zcode')).toBe('ZCode')
+    expect(agentSourceLabel(undefined)).toBe('ZCode')
   })
 
   it('reset 清空覆盖层', () => {

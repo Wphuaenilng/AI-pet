@@ -74,7 +74,7 @@ def make_group(event, target):
             "hooks": [
                 {
                     "type": "command",
-                    "command": f'"{sys.executable}" "{HOOK_SCRIPT}"',
+                    "command": f'"{sys.executable}" "{HOOK_SCRIPT}" --source claude',
                     "timeout": 120 if event == "PermissionRequest" else 10,
                 }
             ],
@@ -86,7 +86,7 @@ def make_group(event, target):
             {
                 "type": "process",
                 "command": sys.executable,
-                "args": [str(HOOK_SCRIPT)],
+                "args": [str(HOOK_SCRIPT), "--source", "zcode"],
                 "timeoutMs": 120000 if event == "PermissionRequest" else 3000,
             }
         ],

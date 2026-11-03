@@ -21,7 +21,7 @@ import { behaviorWeights, pickWeighted } from '../behavior/weights'
 import { StateMachine, type PetFsmState } from '../behavior/StateMachine'
 import { World } from '../desktop/World'
 import { pickCanned, type CannedKind } from '../ai/Personality'
-import { AgentLayer, isAgentKind, type AgentKind } from './agentSync'
+import { AgentLayer, agentSourceLabel, isAgentKind, type AgentKind } from './agentSync'
 import { PetAnimation } from './PetAnimation'
 import { PetRenderer } from './PetRenderer'
 import { EmotionSystem, type ExprKind } from './PetState'
@@ -76,6 +76,13 @@ export interface BubbleState {
   bottom: number
 }
 
+interface BubbleItem extends PetSayPayload {
+  /** 状态型气泡可覆盖普通阅读计时；agent-thinking 用它跟随长思考 */
+  durationMs?: number
+  /** 同状态去重/状态切换时精确清除，不误伤普通聊天 */
+  tag?: string
+}
+
 /** 右键自定义菜单的显示位置（画布内 CSS 像素），null 表示关闭 */
 export type PetMenuState = { x: number; y: number } | null
 
@@ -93,8 +100,9 @@ export class PetBrain {
   private renderer: PetRenderer
   private planner: Planner
   private goal: Goal | null = null
-  private bubbleQueue: PetSayPayload[] = []
+  private bubbleQueue: BubbleItem[] = []
   private bubbleUntil = 0
+  private bubbleTag: string | null = null
   private pendingIntent: string | null = null
   private raf = 0
   private watchdog = 0
@@ -339,8 +347,8 @@ export class PetBrain {
         const g = this.takePendingIntent()
         if (g) this.setGoal(g)
       }),
-      await listen<{ kind: string; message?: string }>('pet://external-event', (p) =>
-        this.onExternalEvent(p.kind, p.message),
+      await listen<{ kind: string; message?: string; source?: string }>('pet://external-event', (p) =>
+        this.onExternalEvent(p.kind, p.message, p.source),
       ),
       // M6 托盘"聊天感知"开关（前端闸：关闭时 agent-* 事件直接丢弃）
       await listen('tray://toggle-agentsync', () => this.toggleAgentSync()),
@@ -459,6 +467,7 @@ export class PetBrain {
     // 气泡队列
     if (this.bubble.visible && t > this.bubbleUntil) {
       this.bubble = { visible: false, text: '', bottom: 0 }
+      this.bubbleTag = null
       this.streaming = false
       this.pushBubble()
       if (this.fsm.current === 'TALK') this.setPose('IDLE')
@@ -1015,9 +1024,9 @@ export class PetBrain {
   // ---------- 外部事件总线（M5，附录 A.4） ----------
 
   /** 事件种类 → 行为/表情映射：构建结果、通知等外部事件即插即用 */
-  onExternalEvent(kind: string, message?: string): void {
+  onExternalEvent(kind: string, message?: string, source?: string): void {
     if (isAgentKind(kind)) {
-      this.onAgentEvent(kind)
+      this.onAgentEvent(kind, source)
       return
     }
     const text = (message || '').trim()
@@ -1043,13 +1052,13 @@ export class PetBrain {
     }
   }
 
-  // ---------- M6 聊天感知（ZCode 编码代理状态联动，§九） ----------
+  // ---------- M6 聊天感知（ZCode / Claude 编码代理状态联动，§九） ----------
 
   /**
    * agent-* 事件入口。优先级（§9.3-3）：低于拖拽/抛掷、睡眠、用户聊天；
    * 高于 idle wander/自言自语。总开关 agentSync 关闭时直接丢弃。
    */
-  private onAgentEvent(kind: AgentKind): void {
+  private onAgentEvent(kind: AgentKind, source?: string): void {
     if (!this.settings.agentSync) return
     if (this.dragging) return
     if (this.fsm.current === 'SLEEP') return // 睡眠优先（PermissionRequest 走 M5 审批闭环独立通道）
@@ -1064,11 +1073,14 @@ export class PetBrain {
     ) {
       return
     }
+    // 思考提示跟状态走：进入执行/完成/失败后立刻撤掉，不等普通气泡计时。
+    if (kind !== 'agent-thinking') this.clearTaggedBubble('agent-thinking')
     const d = this.agentLayer.ingest(kind, now)
+    const label = agentSourceLabel(source)
     // 气泡先行：tool-ok 摘要气泡与跃迁无关（合并续期时也可能到摘要节奏）
     if (d.bubble) {
       if (d.kind === 'agent-tool-ok') {
-        this.say(`已连续 ${d.summary ?? 3} 步顺利，稳～`)
+        this.say(`${label}：已连续 ${d.summary ?? 3} 步顺利，稳～`)
       } else {
         const lineKind: Partial<Record<AgentKind, CannedKind>> = {
           'agent-session': 'agentStart',
@@ -1077,7 +1089,15 @@ export class PetBrain {
           'agent-done': 'agentDone',
         }
         const ck = lineKind[d.kind]
-        if (ck) this.say(this.pickCanned(ck))
+        if (ck) {
+          if (d.kind === 'agent-thinking') this.clearTaggedBubble('agent-thinking')
+          this.say(
+            `${label}：${this.pickCanned(ck)}`,
+            d.kind === 'agent-thinking'
+              ? { durationMs: Math.max(2400, d.until - now), tag: 'agent-thinking' }
+              : {},
+          )
+        }
       }
     }
     if (!d.transitioned) return
@@ -1153,10 +1173,13 @@ export class PetBrain {
   private toggleAgentSync(): void {
     const on = !this.settings.agentSync
     this.settings = { ...this.settings, agentSync: on }
-    if (!on) this.agentLayer.reset()
+    if (!on) {
+      this.agentLayer.reset()
+      this.clearTaggedBubble('agent-thinking')
+    }
     void import('../store').then(({ saveSettings }) => saveSettings(this.settings))
     void invoke('set_tray_agentsync', { checked: on }).catch(() => {})
-    this.say(on ? '聊天感知开启啦，ZCode 干活我站岗～' : '聊天感知关掉了，专心陪你。')
+    this.say(on ? '聊天感知开启啦，ZCode / Claude 干活我站岗～' : '聊天感知关掉了，专心陪你。')
   }
 
   // ---------- 待机序列（附录 A.2） ----------
@@ -1188,11 +1211,29 @@ export class PetBrain {
 
   // ---------- 气泡 / 说话 ----------
 
-  say(text: string, opts: Partial<PetSayPayload> = {}): void {
+  say(text: string, opts: Partial<BubbleItem> = {}): void {
     if (!text) return
     if (this.mini && !this.miniPeeking) return // Mini 缩起时气泡在屏外，别排队积攒
-    this.bubbleQueue.push({ text, emotion: opts.emotion, action: opts.action, fromChat: opts.fromChat })
+    this.bubbleQueue.push({
+      text,
+      emotion: opts.emotion,
+      action: opts.action,
+      fromChat: opts.fromChat,
+      durationMs: opts.durationMs,
+      tag: opts.tag,
+    })
     if (this.bubbleQueue.length > 2) this.bubbleQueue.shift()
+  }
+
+  /** 撤掉指定状态气泡（含尚未显示的排队项），不影响其他聊天/通知。 */
+  private clearTaggedBubble(tag: string): void {
+    this.bubbleQueue = this.bubbleQueue.filter((item) => item.tag !== tag)
+    if (!this.bubble.visible || this.bubbleTag !== tag) return
+    this.bubble = { visible: false, text: '', bottom: 0 }
+    this.bubbleTag = null
+    this.bubbleUntil = 0
+    this.pushBubble()
+    if (this.fsm.current === 'TALK') this.setPose('IDLE')
   }
 
   /** 脚底到头顶的可视高度（css·scale）：bloub 是直径 68 的球，petdex 图集是 ATLAS_H 高 */
@@ -1211,16 +1252,11 @@ export class PetBrain {
     const item = this.bubbleQueue.shift()
     if (!item) return
     // 流式刚结束：直接把流式气泡替换成最终台词，不再等它自然过期
-    if (this.streaming && this.bubble.visible) {
-      this.streaming = false
-      this.bubble = { visible: true, text: item.text, bottom: 0 }
-      this.bubbleUntil = t + Math.max(2400, Math.min(9000, 1500 + item.text.length * 170))
-      this.pushBubble()
-      this.applyBubbleEffects(item)
-      return
-    }
+    if (this.streaming && this.bubble.visible) this.streaming = false
+    const duration = item.durationMs ?? Math.max(2400, Math.min(9000, 1500 + item.text.length * 170))
     this.bubble = { visible: true, text: item.text, bottom: 0 }
-    this.bubbleUntil = t + Math.max(2400, Math.min(9000, 1500 + item.text.length * 170))
+    this.bubbleTag = item.tag ?? null
+    this.bubbleUntil = t + duration
     this.pushBubble()
     this.applyBubbleEffects(item)
   }
@@ -1252,6 +1288,7 @@ export class PetBrain {
     this.streaming = true
     this.lastChatAt = this.now()
     this.bubble = { visible: true, text, bottom: 0 }
+    this.bubbleTag = null
     this.bubbleUntil = this.now() + 3000
     this.pushBubble()
   }
@@ -1587,9 +1624,12 @@ export class PetBrain {
   applySettings(s: Settings): void {
     const prevScale = this.settings.scale
     this.settings = s
-    // M6：托盘"聊天感知"文字与设置面板保持一处事实源；关闭时清空覆盖层
+    // M6：托盘"聊天感知"文字与设置面板保持一处事实源；关闭时清空覆盖层与状态气泡
     void invoke('set_tray_agentsync', { checked: !!s.agentSync }).catch(() => {})
-    if (!s.agentSync) this.agentLayer.reset()
+    if (!s.agentSync) {
+      this.agentLayer.reset()
+      this.clearTaggedBubble('agent-thinking')
+    }
     if (Math.abs(prevScale - s.scale) > 0.01 && isTauri) {
       void invoke('set_pet_scale', { scale: s.scale }).then(() =>
         invoke<{ x: number; y: number; w: number; h: number; scale: number }>('get_window_info', {

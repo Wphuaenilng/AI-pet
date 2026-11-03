@@ -36,6 +36,16 @@ import urllib.request
 
 BRIDGE = os.environ.get("PET_BRIDGE_URL", "http://127.0.0.1:7788")
 TIMEOUT = 0.5
+# 同一脚本服务两个 harness，由安装器显式传入来源；旧配置缺省仍按 ZCode 兼容。
+SOURCE = "zcode"
+if "--source" in sys.argv:
+    try:
+        candidate = sys.argv[sys.argv.index("--source") + 1].lower()
+        if candidate in ("zcode", "claude"):
+            SOURCE = candidate
+    except (IndexError, AttributeError):
+        pass
+SOURCE_LABEL = "Claude" if SOURCE == "claude" else "ZCode"
 LOG_ENABLED = os.environ.get("PET_HOOK_LOG", "1") != "0"
 LOG_PATH = os.path.join(tempfile.gettempdir(), "ai-pet-hook.log")
 LOG_MAX = 256 * 1024
@@ -117,10 +127,10 @@ def handle_permission(data):
     detail = str(tool)
     if tool_input is not None:
         detail += " " + json.dumps(tool_input, ensure_ascii=False)
-    resp = post("/approval", {"title": "ZCode 请求许可", "detail": detail[:200]})
+    resp = post("/approval", {"title": f"{SOURCE_LABEL} 请求许可", "detail": detail[:200]})
     approval_id = (resp or {}).get("id") or ""
     if not approval_id:
-        return  # 没拿到 id：静默退出，ZCode 默认审批接管
+        return  # 没拿到 id：静默退出，harness 默认审批接管
     log(f"approval posted id={approval_id}")
     deadline = time.monotonic() + APPROVAL_WAIT_S
     while time.monotonic() < deadline:
@@ -156,10 +166,10 @@ def main():
         if not mapped:
             return
         _path, kind = mapped
-        post("/event", {"kind": kind})
-        log(f"posted kind={kind}")
+        post("/event", {"kind": kind, "source": SOURCE})
+        log(f"posted kind={kind} source={SOURCE}")
     except BaseException:
-        # 零副作用：任何失败都不影响 ZCode
+        # 零副作用：任何失败都不影响编码代理
         log("exception swallowed")
     finally:
         try:
