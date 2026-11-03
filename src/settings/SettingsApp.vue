@@ -331,7 +331,7 @@ function applyPreset(p: { url: string; model: string }) {
       <div class="emo-grid">
         <div v-for="(v, k) in emotion?.values ?? null" :key="k" class="emo-row">
           <span class="emo-label">{{
-            { happiness: '开心', energy: '精力', curiosity: '好奇', affection: '亲密', boredom: '无聊', hunger: '饱食' }[k]
+            { happiness: '开心', energy: '精力', curiosity: '好奇', affection: '亲密', boredom: '无聊' }[k]
           }}</span>
           <div class="emo-bar">
             <div class="emo-fill" :class="k" :style="{ width: v + '%' }" />

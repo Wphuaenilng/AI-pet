@@ -111,7 +111,7 @@ onBeforeUnmount(() => {
   approvalUnlisten?.()
 })
 
-function dbg(name: 'sleep' | 'wander' | 'climb' | 'dance' | 'pat' | 'feed') {
+function dbg(name: 'sleep' | 'wander' | 'climb' | 'dance' | 'pat') {
   brain.value?.debug[name]()
 }
 function sayHi() {
@@ -183,7 +183,6 @@ function menuHidePet() {
       <span class="preview-title">预览模式</span>
       <button @click="sayHi">说话</button>
       <button @click="dbg('pat')">摸摸</button>
-      <button @click="dbg('feed')">喂食</button>
       <button @click="dbg('sleep')">睡觉</button>
       <button @click="dbg('wander')">走两步</button>
       <button @click="dbg('climb')">跳上窗口</button>

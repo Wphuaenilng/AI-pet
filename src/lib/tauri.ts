@@ -180,7 +180,6 @@ export interface EmotionPayload {
     curiosity: number
     affection: number
     boredom: number
-    hunger: number
   }
   expr: string
   state: string

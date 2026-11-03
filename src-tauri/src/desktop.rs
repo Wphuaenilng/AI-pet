@@ -1,8 +1,8 @@
 // 桌面世界感知：显示器、可见窗口、任务栏
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-use windows::core::w;
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+use windows::core::{w, BOOL};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
 use windows::Win32::UI::WindowsAndMessaging::{

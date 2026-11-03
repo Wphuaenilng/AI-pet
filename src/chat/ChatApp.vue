@@ -33,7 +33,7 @@ const lastEmotion = ref<EmotionPayload | null>(null)
 const unlistens: (() => void)[] = []
 
 // 宠物窗口离线/未启动时的兜底值
-const FALLBACK_EMOTION = { happiness: 65, energy: 80, curiosity: 55, affection: 45, boredom: 20, hunger: 70 }
+const FALLBACK_EMOTION = { happiness: 65, energy: 80, curiosity: 55, affection: 45, boredom: 20 }
 
 const avatar = computed(() => '')
 const speciesEmoji = computed(() => '⚫')

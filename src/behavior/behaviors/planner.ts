@@ -25,14 +25,6 @@ export class Planner {
     this.root = new Selector([
       // AI 提出的高层行为意图（26.2：仅意图，由本地系统裁决）
       new Act((ctx) => ctx.takePendingIntent()),
-      // 饿了讨食（附录 A.2）：凑过来要吃的，90s 冷却防刷屏
-      new Sequence([
-        new Cond((ctx) => ctx.emotion.v.hunger < 22 && ctx.canBeg()),
-        new Act((ctx) => {
-          ctx.markBeg()
-          return new ApproachAndSpeakGoal(ctx as PetBrain, ctx.pickCanned('hungry'))
-        }),
-      ]),
       // 累了就睡
       new Sequence([
         new Cond((ctx) => ctx.emotion.v.energy < 16),

@@ -45,13 +45,13 @@ export function buildSystemPrompt(input: {
   }
   lines.push(
     '',
-    `当前状态：心情 ${input.expr}；happiness=${Math.round(e.happiness)}/100，energy=${Math.round(e.energy)}/100，affection=${Math.round(e.affection)}/100，boredom=${Math.round(e.boredom)}/100，hunger=${Math.round(e.hunger)}/100；正在「${input.state}」。`,
+    `当前状态：心情 ${input.expr}；happiness=${Math.round(e.happiness)}/100，energy=${Math.round(e.energy)}/100，affection=${Math.round(e.affection)}/100，boredom=${Math.round(e.boredom)}/100；正在「${input.state}」。`,
     '',
     // 两行协议（流式输出）：第一行台词先到先显示，第二行才是元数据 JSON
     '你必须只输出两行（不要输出任何其他内容，不要加引号或 Markdown）：',
     '第一行：给用户的台词，纯文本。',
     '第二行：一个 JSON 对象：{"emotion":"happy|neutral|sad|angry|surprised|sleepy|concern","action":"none|approach_user|jump_on_window|sit|sleep|play|dance","memory":"..."}',
-    'emotion 是你说完这句话的心情；action 是你想让身体做的小动作（本地系统会决定是否执行）；memory 仅当你得知值得长期记住的用户信息时填写一句话，否则留空字符串。hunger 很低时你可以自然地提到饿了。',
+    'emotion 是你说完这句话的心情；action 是你想让身体做的小动作（本地系统会决定是否执行）；memory 仅当你得知值得长期记住的用户信息时填写一句话，否则留空字符串。',
   )
   return lines.join('\n')
 }

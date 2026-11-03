@@ -13,7 +13,6 @@ import {
   LayGoal,
   LookGoal,
   RunGoal,
-  SeekFoodGoal,
   SitGoal,
   SleepGoal,
   WanderGoal,
@@ -139,9 +138,6 @@ export class PetBrain {
   private emotionEmitT = 0
   private petStateT = 0
   private lastSavedPet = { x: NaN, y: NaN }
-  // 投喂（附录 A.2）：食物实体（桌面物理坐标），落地后宠物自己走过去吃
-  food: { x: number; y: number; vy: number; landed: boolean } | null = null
-  private lastBeg = 0
   private hardLandUntil = 0
   private idleSleepT = 0
   private lastWinSig = ''
@@ -276,14 +272,10 @@ export class PetBrain {
         const st = await invoke<{
           x?: number
           feetY?: number
-          hunger?: number
           affection?: number
         } | null>('read_data', { name: 'petstate' })
-        // 动机持久化（附录 A.2）：饱食度/好感跨会话恢复
+        // 好感跨会话恢复
         if (st) {
-          if (Number.isFinite(st.hunger)) {
-            this.emotion.v.hunger = Math.max(0, Math.min(100, st.hunger as number))
-          }
           if (Number.isFinite(st.affection)) {
             this.emotion.v.affection = Math.max(0, Math.min(100, st.affection as number))
           }
@@ -317,7 +309,6 @@ export class PetBrain {
         else this.setPose('IDLE')
       }),
       await listen('tray://summon', () => this.summon()),
-      await listen('tray://feed', () => this.dropFood()),
       await listen<PetSayPayload>('pet://say', (p) => this.say(p.text, p)),
       await listen<Settings>('settings://updated', (s) => this.applySettings(s)),
       // 全局热键 Ctrl+Shift+U（附录 A.1）：切换强制鼠标穿透
@@ -436,8 +427,7 @@ export class PetBrain {
       this.maybeProactive(dt, t)
     }
 
-    // 食物物理独立于宠物（拖拽中也会掉落）；待机入睡序列仅在非拖拽时推进
-    this.updateFood(dt)
+    // 待机入睡序列仅在非拖拽时推进
     this.maybeIdleSleep(dt)
 
     // 情绪
@@ -568,9 +558,6 @@ export class PetBrain {
       speed: this.speedNow,
       eyeDX: this.cursorEye.dx,
       eyeDY: this.cursorEye.dy,
-      food: this.food
-        ? { dx: this.food.x - p.x, dy: p.feetY - this.food.y }
-        : null,
     })
     this.renderer.render(render)
   }
@@ -993,58 +980,6 @@ export class PetBrain {
     void emitAll('pet://memory-event', '主动关心了用户')
   }
 
-  // ---------- 投喂（附录 A.2） ----------
-
-  /** 投喂：食物从宠物侧上方掉落（桌面坐标），落地后宠物自己走过去吃 */
-  dropFood(): void {
-    if (this.food) return
-    const m = this.world.monitorAt(this.pet.x) ?? this.world.monitors.find((x) => x.primary)
-    if (!m) return
-    const u = this.u
-    const side = Math.random() < 0.5 ? -1 : 1
-    const fx = Math.max(
-      m.wx + 40 * u,
-      Math.min(m.wx + m.ww - 40 * u, this.pet.x + side * (120 + Math.random() * 80) * u),
-    )
-    this.food = { x: fx, y: this.pet.feetY - 320 * u, vy: 0, landed: false }
-    this.paused = false
-    this.say(this.pickCanned('foodDrop'))
-    this.setGoal(new SeekFoodGoal(this))
-  }
-
-  private updateFood(dt: number): void {
-    const f = this.food
-    if (!f || f.landed) return
-    const prevY = f.y
-    f.vy += GRAVITY * this.u * dt
-    f.y += f.vy * dt
-    const land = this.world.landingSurface(f.x, prevY, f.y + 4)
-    if (land && f.vy > 0) {
-      f.y = land.top
-      f.vy = 0
-      f.landed = true
-    }
-  }
-
-  /** SeekFoodGoal 走到食物旁后调用：吃掉 + 数值反馈 */
-  finishEat(): void {
-    this.emotion.feed()
-    this.anim.burst('heart', 4)
-    this.anim.burst('sparkle', 3)
-    this.say(this.pickCanned('eating'))
-    this.food = null
-    void emitAll('pet://memory-event', '被投喂了一顿')
-  }
-
-  /** 讨食冷却（planner 用）：90s 内不重复讨食 */
-  canBeg(): boolean {
-    return this.now() - this.lastBeg > 90_000
-  }
-
-  markBeg(): void {
-    this.lastBeg = this.now()
-  }
-
   // ---------- 外部事件总线（M5，附录 A.4） ----------
 
   /** 事件种类 → 行为/表情映射：构建结果、通知等外部事件即插即用 */
@@ -1388,7 +1323,6 @@ export class PetBrain {
       data: {
         x,
         feetY: y,
-        hunger: Math.round(this.emotion.v.hunger),
         affection: Math.round(this.emotion.v.affection),
       },
     }).catch(() => {})
@@ -1447,7 +1381,6 @@ export class PetBrain {
     climb: () => void
     dance: () => void
     pat: () => void
-    feed: () => void
   } = {
     sleep: () => this.setGoal(new SleepGoal(this, 10)),
     wander: () => this.setGoal(new WanderGoal(this)),
@@ -1458,6 +1391,5 @@ export class PetBrain {
     },
     dance: () => this.setGoal(new DanceGoal(this, 3)),
     pat: () => this.onPatted(),
-    feed: () => this.dropFood(),
   }
 }

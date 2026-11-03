@@ -44,7 +44,6 @@ pub fn toggle_paused(app: AppHandle) -> bool {
 
 pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
     let chat = MenuItem::with_id(&app, "chat", "聊天", true, None::<&str>)?;
-    let feed = MenuItem::with_id(&app, "feed", "投喂", true, None::<&str>)?;
     let pause = MenuItem::with_id(&app, "pause", "暂停宠物", true, None::<&str>)?;
     let summon = MenuItem::with_id(&app, "summon", "重新召唤", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(&app)?;
@@ -55,7 +54,7 @@ pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
 
     let menu = Menu::with_items(
         &app,
-        &[&chat, &feed, &pause, &summon, &sep1, &settings, &hide, &sep2, &quit],
+        &[&chat, &pause, &summon, &sep1, &settings, &hide, &sep2, &quit],
     )?;
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon_32.png"))?;
@@ -91,10 +90,6 @@ pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
             "summon" => {
                 let _ = crate::window::show_window_impl(app, "pet");
                 let _ = app.emit("tray://summon", ());
-            }
-            "feed" => {
-                let _ = crate::window::show_window_impl(app, "pet");
-                let _ = app.emit("tray://feed", ());
             }
             "hide" => {
                 if let Some(pet) = app.get_webview_window("pet") {

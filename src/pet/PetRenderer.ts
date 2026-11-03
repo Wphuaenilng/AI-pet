@@ -43,8 +43,6 @@ export interface Pose {
   face: Face
   squash: number // 落地挤压 0..1
   particles: Particle[]
-  /** 投喂食物（窗口相对偏移：dx 相对宠物中心，dy 相对脚底向上），null = 无 */
-  food: { dx: number; dy: number } | null
   eyeClosed: number // 眨眼程度 0..1
 }
 
@@ -66,14 +64,6 @@ export class PetRenderer {
     const ctx = this.ctx
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
     this.drawParticles(p)
-    if (p.food) {
-      // 投喂食物：emoji 绘制（与粒子同一画风），锚在食物落点
-      const size = 30 * p.u
-      ctx.font = `${size}px "Segoe UI Emoji", "Segoe UI", sans-serif`
-      ctx.textAlign = 'center'
-      ctx.fillText('🍡', p.cx + p.food.dx, p.feetY - p.food.dy)
-      ctx.textAlign = 'start'
-    }
   }
 
   private drawParticles(p: Pose): void {
