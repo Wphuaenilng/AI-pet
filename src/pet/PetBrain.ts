@@ -1401,6 +1401,8 @@ export class PetBrain {
   private onPointerUp(): void {
     if (!this.dragging) return
     this.dragging = false
+    // 松手后应用拖拽期间保留的最新覆盖层尺寸，避免补算过期测量值。
+    if (this.overlaySizeTarget !== null && !this.overlaySizeInFlight) void this.syncOverlaySize()
     try {
       this.canvas.style.cursor = 'pointer'
     } catch {
@@ -1581,18 +1583,18 @@ export class PetBrain {
     this.agentRect = r ? this.cssHitRect(r) : null
   }
 
-  /** PetApp 测量覆盖内容所需 CSS 尺寸；透明窗口扩展，消息清空后恢复基础尺寸。 */
+  /** PetApp 测量覆盖内容所需 CSS 尺寸；拖拽时只保留最新目标，避免扩窗与定位竞争。 */
   setOverlaySize(contentWidth: number, contentHeight: number): void {
     if (!isTauri) return
     this.overlaySizeTarget = { width: contentWidth, height: contentHeight }
-    if (!this.overlaySizeInFlight) void this.syncOverlaySize()
+    if (!this.overlaySizeInFlight && !this.dragging) void this.syncOverlaySize()
   }
 
   private async syncOverlaySize(): Promise<void> {
-    if (this.overlaySizeInFlight) return
+    if (this.overlaySizeInFlight || this.dragging) return
     this.overlaySizeInFlight = true
     try {
-      while (this.overlaySizeTarget !== null && !this.stopped) {
+      while (this.overlaySizeTarget !== null && !this.stopped && !this.dragging) {
         const requested = this.overlaySizeTarget
         this.overlaySizeTarget = null
         const baseWidth = PET_W * this.settings.scale
