@@ -71,28 +71,24 @@ pub fn set_pet_scale(app: AppHandle, scale: f64) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// 消息内容需要更多空间时扩展透明窗口，宠物水平中心与脚底（窗口底边）保持不动。
+/// 宽度固定；消息需要更多空间时只向上扩展，脚底（窗口底边）保持不动。
 #[tauri::command]
-pub fn set_pet_overlay_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    eprintln!("[pet] set_pet_overlay_size {width:.0}x{height:.0}");
+pub fn set_pet_height(app: AppHandle, height: f64) -> Result<(), String> {
     let pet = app
         .get_webview_window("pet")
         .ok_or("pet window not found")?;
     let old = pet.outer_size().map_err(|e| e.to_string())?;
     let pos = pet.outer_position().map_err(|e| e.to_string())?;
     let dpr = pet.scale_factor().map_err(|e| e.to_string())? as f64;
-    let width = width.clamp(100.0, 4000.0);
     let height = height.clamp(100.0, 2000.0);
+    let width = old.width as f64 / dpr;
     pet.set_size(tauri::Size::Logical(LogicalSize::new(width, height)))
         .map_err(|e| e.to_string())?;
-    let new_w_phys = width * dpr;
     let new_h_phys = height * dpr;
-    let old_center_x = pos.x as f64 + old.width as f64 / 2.0;
-    let old_bottom = pos.y as f64 + old.height as f64;
+    let bottom_shift = old.height as f64 - new_h_phys;
     pet.set_position(Position::Physical(PhysicalPosition::new(
-        (old_center_x - new_w_phys / 2.0).round() as i32,
-        (old_bottom - new_h_phys).round() as i32,
+        pos.x,
+        (pos.y as f64 + bottom_shift).round() as i32,
     )))
     .map_err(|e| e.to_string())
 }

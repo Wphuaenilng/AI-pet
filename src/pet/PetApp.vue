@@ -79,28 +79,16 @@ watch([agentMessages, agentCollapsed, bubble, agentBottom], async () => {
       h: bounds.bottom - bounds.top,
     })
   }
-  let requiredWidth = 0
   let requiredHeight = 0
-  const viewportCenter = window.innerWidth / 2
-  const includeWidth = (el: Element) => {
-    const r = el.getBoundingClientRect()
-    // 以宠物水平中心对称扩窗，确保向屏幕内侧偏移后的内容仍在原生窗口内。
-    requiredWidth = Math.max(
-      requiredWidth,
-      2 * Math.max(Math.abs(r.left - viewportCenter), Math.abs(r.right - viewportCenter)) + 16,
-    )
-  }
   const center = document.querySelector('.agent-center')
   if (center && !agentCollapsed.value) {
-    includeWidth(center)
     requiredHeight = agentBottom.value + center.getBoundingClientRect().height + 8
   }
   // v-if 离场动画期间节点仍存在；不可见气泡不能阻止原生窗口恢复基础尺寸。
-  if (bubbleEl && bubbleRect) {
-    includeWidth(bubbleEl)
+  if (bubbleRect) {
     requiredHeight = Math.max(requiredHeight, bubble.value.bottom + bubbleRect.height + 8)
   }
-  brain.value?.setOverlaySize(requiredWidth, requiredHeight)
+  brain.value?.setOverlayHeight(requiredHeight)
 })
 
 // 渲染通道（PetBrain 回调驱动）：bloub 程序化 SVG 或 Petdex 图集

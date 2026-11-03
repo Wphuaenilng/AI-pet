@@ -63,7 +63,7 @@ fn main() {
             mouse::get_cursor_pos,
             window::set_pet_position,
             window::set_pet_scale,
-            window::set_pet_overlay_size,
+            window::set_pet_height,
             window::set_pet_ignore_cursor_events,
             window::show_window,
             window::hide_window,

@@ -131,10 +131,9 @@ export class PetBrain {
   private winH = PET_H
   private winX = 0
   private winY = 0
-  private overlaySizeTarget: { width: number; height: number } | null = null
-  private overlaySizeInFlight = false
+  private overlayHeightTarget: number | null = null
+  private overlayHeightInFlight = false
   private overlayResizeAfter = 0
-  private overlayWidthSent = 0
   private overlayHeightSent = 0
 
   u = 1 // 设备像素 / css像素（含缩放）
@@ -1402,10 +1401,12 @@ export class PetBrain {
   private onPointerUp(): void {
     if (!this.dragging) return
     this.dragging = false
-    // Mini 归位与扩窗不能同时抢改原生窗口；待位置稳定后只应用最新尺寸。
+    // Mini 归位与高度调整不能同时抢改原生窗口；稳定后只应用最新高度。
     this.overlayResizeAfter = performance.now() + 900
     this.later(() => {
-      if (this.overlaySizeTarget !== null && !this.overlaySizeInFlight) void this.syncOverlaySize()
+      if (this.overlayHeightTarget !== null && !this.overlayHeightInFlight) {
+        void this.syncOverlayHeight()
+      }
     }, 900)
     try {
       this.canvas.style.cursor = 'pointer'
@@ -1591,33 +1592,23 @@ export class PetBrain {
     return this.dragging || this.pet.airborne || performance.now() < this.overlayResizeAfter
   }
 
-  /** PetApp 测量覆盖内容所需 CSS 尺寸；移动时只保留最新目标，避免扩窗与定位竞争。 */
-  setOverlaySize(contentWidth: number, contentHeight: number): void {
+  /** 宽度固定；PetApp 只测量内容高度，移动时保留最新目标以避免定位竞争。 */
+  setOverlayHeight(contentHeight: number): void {
     if (!isTauri) return
-    this.overlaySizeTarget = { width: contentWidth, height: contentHeight }
-    if (!this.overlaySizeInFlight && !this.overlayResizeBlocked()) void this.syncOverlaySize()
+    this.overlayHeightTarget = contentHeight
+    if (!this.overlayHeightInFlight && !this.overlayResizeBlocked()) void this.syncOverlayHeight()
   }
 
-  private async syncOverlaySize(): Promise<void> {
-    if (this.overlaySizeInFlight || this.overlayResizeBlocked()) return
-    this.overlaySizeInFlight = true
+  private async syncOverlayHeight(): Promise<void> {
+    if (this.overlayHeightInFlight || this.overlayResizeBlocked()) return
+    this.overlayHeightInFlight = true
     try {
-      while (this.overlaySizeTarget !== null && !this.stopped && !this.overlayResizeBlocked()) {
-        const requested = this.overlaySizeTarget
-        this.overlaySizeTarget = null
-        const baseWidth = PET_W * this.settings.scale
-        // DOM 亚像素测量在扩窗后会有几像素往返；按档取整，避免原生窗口持续抖动。
-        const width =
-          requested.width > baseWidth ? Math.ceil(requested.width / 32) * 32 : baseWidth
-        const height = Math.ceil(Math.max(PET_H * this.settings.scale, requested.height))
-        if (
-          Math.abs(width - this.overlayWidthSent) < 1 &&
-          Math.abs(height - this.overlayHeightSent) < 1
-        ) {
-          continue
-        }
-        await invoke('set_pet_overlay_size', { width, height })
-        this.overlayWidthSent = width
+      while (this.overlayHeightTarget !== null && !this.stopped && !this.overlayResizeBlocked()) {
+        const requested = this.overlayHeightTarget
+        this.overlayHeightTarget = null
+        const height = Math.ceil(Math.max(PET_H * this.settings.scale, requested))
+        if (Math.abs(height - this.overlayHeightSent) < 1) continue
+        await invoke('set_pet_height', { height })
         this.overlayHeightSent = height
         const info = await invoke<{ x: number; y: number; w: number; h: number; scale: number }>(
           'get_window_info',
@@ -1631,17 +1622,16 @@ export class PetBrain {
         this.dpr = info.scale || this.dpr
         this.u = this.dpr * this.settings.scale
         this.renderer.resize(this.winW, this.winH)
-        // 原生端保持宠物水平中心与窗口底边不动；同步位置缓存和 DOM 几何。
+        // 原生端保持窗口底边不动；同步位置缓存和 DOM 几何。
         this.lastSent = { x: info.x, y: info.y }
         this.markPosDirty()
         this.pushBubble()
       }
     } catch (e) {
-      this.overlayWidthSent = 0
       this.overlayHeightSent = 0
       this.log(`overlay resize failed: ${e}`)
     } finally {
-      this.overlaySizeInFlight = false
+      this.overlayHeightInFlight = false
     }
   }
 
@@ -1765,7 +1755,6 @@ export class PetBrain {
             this.pet.x = info.x + info.w / 2
             // 缩放后几何变了，强制下一次 syncWindowPos 发送
             this.lastSent = { x: NaN, y: NaN }
-            this.overlayWidthSent = 0
             this.overlayHeightSent = 0
             this.markPosDirty()
             this.pushBubble()
