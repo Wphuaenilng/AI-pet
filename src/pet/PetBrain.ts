@@ -1465,8 +1465,11 @@ export class PetBrain {
     const c = this.world.cursor
     const nearEdge = mini.side === 'right' ? c.x > edgeX - 28 : c.x < edgeX + 28
     const inStripY = Math.abs(c.y - (this.pet.feetY - 40 * u)) < 90 * u
-    // 审批/聊天流式/代理消息必须探出，避免卡片停在屏外
-    if ((nearEdge && inStripY) || this.approvalRect || this.streaming || this.agentMessages.size > 0) {
+    const hasOverlay = Boolean(
+      this.approvalRect || this.streaming || this.bubble.visible || this.agentMessages.size > 0,
+    )
+    // 任何消息或审批出现时都先探出，给宠物本体和气泡预留完整显示空间。
+    if ((nearEdge && inStripY) || hasOverlay) {
       this.miniPeeking = true
       this.miniLastHoverT = this.now()
     } else if (this.miniPeeking) {
@@ -1475,14 +1478,24 @@ export class PetBrain {
       if (stillNear && inStripY) this.miniLastHoverT = this.now()
       if (this.now() - this.miniLastHoverT > 1500) this.miniPeeking = false
     }
-    // 缩起：中心屏外 18u（球半径约 34u，露出 ~16u 小条）；探出：整个身体回屏内
-    const targetX = this.miniPeeking
+    // 缩起：中心屏外 18u；普通探出只露出身体，有消息时额外内移，预留固定气泡区。
+    let targetX = this.miniPeeking
       ? mini.side === 'right'
         ? edgeX - 56 * u
         : edgeX + 56 * u
       : mini.side === 'right'
         ? edgeX + 18 * u
         : edgeX - 18 * u
+    if (this.miniPeeking && hasOverlay) {
+      const cssWidth = this.canvas.clientWidth || this.winW
+      const physicalPerCss = this.winW / cssWidth
+      const contentWidth = Math.min(380 * physicalPerCss, this.winW - 16 * physicalPerCss)
+      const reserve = Math.max(0, contentWidth + 8 * u - this.winW / 2)
+      targetX =
+        mini.side === 'right'
+          ? Math.min(targetX, edgeX - reserve)
+          : Math.max(targetX, edgeX + reserve)
+    }
     this.pet.x += (targetX - this.pet.x) * Math.min(1, dt * 8)
     this.markPosDirty()
   }
