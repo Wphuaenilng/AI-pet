@@ -13,6 +13,14 @@
 pet_hook.py），不使用自定义键——ZCode 的组 schema 只认 matcher/hooks，
 多余键（如 id）会导致整个用户配置文件加载失败（2026-11-03 实机踩坑，
 见 ~/.zcode/cli/log/zcode-*.jsonl 的 config.file.invalid 记录）。
+
+2026-11-03 二次踩坑（读 zcode.cjs 运行时代码确认）：
+- 用户级 hooks 有总开关 hooks.enabled，缺省=false 时 HookRunner 整个不创建
+  （oyt: e.config.enabled ? ... : []），事件配置再多也不会触发，且无任何
+  日志/UI 提示。必须显式写 "enabled": true。
+- process 类型钩子的超时键是 timeoutMs（不是 timeout，后者被 passthrough
+  忽略，会落回默认 60s）。
+- matcher "*" 是合法通配（ZSo: t==="*" → true）。
 """
 import json
 import sys
@@ -46,7 +54,7 @@ def load_config():
 
 def make_group():
     # 组 schema 只保留 ZCode 认识的键（matcher/hooks）；
-    # timeout 对 process 钩子按毫秒理解，给足 3s（python 冷启动 + HTTP 500ms）
+    # process 钩子的超时键是 timeoutMs（毫秒），给足 3s（python 冷启动 + HTTP 500ms）
     return {
         "matcher": "*",
         "hooks": [
@@ -54,7 +62,7 @@ def make_group():
                 "type": "process",
                 "command": sys.executable,
                 "args": [str(HOOK_SCRIPT)],
-                "timeout": 3000,
+                "timeoutMs": 3000,
             }
         ],
     }
@@ -85,6 +93,8 @@ def cmd_install():
     if not isinstance(hooks, dict):
         print("错误：config.json 的 hooks 字段不是对象，无法安装。")
         sys.exit(1)
+    # 总开关：缺省时 ZCode 不创建 HookRunner，事件配置不会触发（见文件头踩坑记录）
+    hooks["enabled"] = True
     events = hooks.get("events")
     if events is None:
         events = {}
@@ -168,6 +178,8 @@ def cmd_status():
     if not isinstance(events, dict):
         print("状态：未安装（无 hooks.events）")
         return
+    print(f"总开关 hooks.enabled：{hooks.get('enabled')!r}"
+          + ("" if hooks.get("enabled") is True else "  ← 未开启，钩子不会触发！请运行 install"))
     ok = 0
     for name in EVENTS:
         lst = events.get(name)

@@ -10,3 +10,4 @@ tauri_*.txt
 gui-test-screenshots/
 desktop-ai-pet-ui.html
 design-assets/
+.diag/
