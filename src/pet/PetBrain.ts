@@ -131,6 +131,9 @@ export class PetBrain {
   private winH = PET_H
   private winX = 0
   private winY = 0
+  private overlayHeightTarget: number | null = null
+  private overlayHeightInFlight = false
+  private overlayHeightSent = 0
 
   u = 1 // 设备像素 / css像素（含缩放）
 
@@ -1577,6 +1580,49 @@ export class PetBrain {
     this.agentRect = r ? this.cssHitRect(r) : null
   }
 
+  /** PetApp 测量覆盖内容所需 CSS 高度；透明窗口向上扩展，消息清空后恢复基础高度。 */
+  setOverlayHeight(contentHeight: number): void {
+    if (!isTauri) return
+    this.overlayHeightTarget = contentHeight
+    if (!this.overlayHeightInFlight) void this.syncOverlayHeight()
+  }
+
+  private async syncOverlayHeight(): Promise<void> {
+    if (this.overlayHeightInFlight) return
+    this.overlayHeightInFlight = true
+    try {
+      while (this.overlayHeightTarget !== null && !this.stopped) {
+        const requested = this.overlayHeightTarget
+        this.overlayHeightTarget = null
+        const height = Math.ceil(Math.max(PET_H * this.settings.scale, requested))
+        if (Math.abs(height - this.overlayHeightSent) < 1) continue
+        await invoke('set_pet_height', { height })
+        this.overlayHeightSent = height
+        const info = await invoke<{ x: number; y: number; w: number; h: number; scale: number }>(
+          'get_window_info',
+          { label: 'pet' },
+        )
+        if (!info || this.stopped) continue
+        this.winX = info.x
+        this.winY = info.y
+        this.winW = info.w
+        this.winH = info.h
+        this.dpr = info.scale || this.dpr
+        this.u = this.dpr * this.settings.scale
+        this.renderer.resize(this.winW, this.winH)
+        // 原生端保持窗口底边不动；只需让位置缓存和 DOM 几何同步到新高度。
+        this.lastSent = { x: info.x, y: info.y }
+        this.markPosDirty()
+        this.pushBubble()
+      }
+    } catch (e) {
+      this.overlayHeightSent = 0
+      this.log(`overlay resize failed: ${e}`)
+    } finally {
+      this.overlayHeightInFlight = false
+    }
+  }
+
   // ---------- 窗口同步 ----------
 
   markPosDirty(): void {
@@ -1697,7 +1743,9 @@ export class PetBrain {
             this.pet.x = info.x + info.w / 2
             // 缩放后几何变了，强制下一次 syncWindowPos 发送
             this.lastSent = { x: NaN, y: NaN }
+            this.overlayHeightSent = 0
             this.markPosDirty()
+            this.pushBubble()
           }
         }),
       )

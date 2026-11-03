@@ -36,7 +36,9 @@ pub fn init_windows(app: AppHandle) {
 pub fn set_pet_position(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
     #[cfg(debug_assertions)]
     eprintln!("[pet] set_pet_position {:.0},{:.0}", x, y);
-    let pet = app.get_webview_window("pet").ok_or("pet window not found")?;
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or("pet window not found")?;
     pet.set_position(Position::Physical(PhysicalPosition::new(
         x.round() as i32,
         y.round() as i32,
@@ -47,7 +49,9 @@ pub fn set_pet_position(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
 /// 缩放宠物窗口，保持脚底位置与水平中心不变
 #[tauri::command]
 pub fn set_pet_scale(app: AppHandle, scale: f64) -> Result<(), String> {
-    let pet = app.get_webview_window("pet").ok_or("pet window not found")?;
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or("pet window not found")?;
     let s = scale.clamp(0.5, 2.0);
     let old = pet.outer_size().map_err(|e| e.to_string())?;
     let pos = pet.outer_position().map_err(|e| e.to_string())?;
@@ -67,10 +71,35 @@ pub fn set_pet_scale(app: AppHandle, scale: f64) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// 消息内容需要更高空间时向上扩展透明窗口，脚底（窗口底边）保持不动。
+#[tauri::command]
+pub fn set_pet_height(app: AppHandle, height: f64) -> Result<(), String> {
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or("pet window not found")?;
+    let old = pet.outer_size().map_err(|e| e.to_string())?;
+    let pos = pet.outer_position().map_err(|e| e.to_string())?;
+    let dpr = pet.scale_factor().map_err(|e| e.to_string())? as f64;
+    let height = height.clamp(100.0, 2000.0);
+    let width = old.width as f64 / dpr;
+    pet.set_size(tauri::Size::Logical(LogicalSize::new(width, height)))
+        .map_err(|e| e.to_string())?;
+    let new_h_phys = height * dpr;
+    let bottom_shift = old.height as f64 - new_h_phys;
+    pet.set_position(Position::Physical(PhysicalPosition::new(
+        pos.x,
+        (pos.y as f64 + bottom_shift).round() as i32,
+    )))
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn set_pet_ignore_cursor_events(app: AppHandle, ignore: bool) -> Result<(), String> {
-    let pet = app.get_webview_window("pet").ok_or("pet window not found")?;
-    pet.set_ignore_cursor_events(ignore).map_err(|e| e.to_string())
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or("pet window not found")?;
+    pet.set_ignore_cursor_events(ignore)
+        .map_err(|e| e.to_string())
 }
 
 pub fn show_window_impl(app: &AppHandle, label: &str) -> Result<(), String> {

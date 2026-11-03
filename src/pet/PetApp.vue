@@ -47,28 +47,41 @@ watch(approval, async (v) => {
   brain.value?.setApprovalRect({ x: r.x, y: r.y, w: r.width, h: r.height })
 })
 
-// 卡片高度、折叠、左右侧和内移都会改变命中区域；同步卡片与圆钮的联合矩形。
-watch([agentMessages, agentCollapsed, contentOffset, agentControlSide], async () => {
+// 同步命中区域，并按内容实际高度让原生透明窗口向上扩展，而非裁掉顶部。
+watch([agentMessages, agentCollapsed, bubble], async () => {
   await nextTick()
   const elements = document.querySelectorAll('.agent-center, .agent-toggle')
   if (!elements.length || agentMessages.value.length === 0) {
     brain.value?.setAgentRect(null)
-    return
+  } else {
+    const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity }
+    elements.forEach((el) => {
+      const r = el.getBoundingClientRect()
+      bounds.left = Math.min(bounds.left, r.left)
+      bounds.top = Math.min(bounds.top, r.top)
+      bounds.right = Math.max(bounds.right, r.right)
+      bounds.bottom = Math.max(bounds.bottom, r.bottom)
+    })
+    brain.value?.setAgentRect({
+      x: bounds.left,
+      y: bounds.top,
+      w: bounds.right - bounds.left,
+      h: bounds.bottom - bounds.top,
+    })
   }
-  const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity }
-  elements.forEach((el) => {
-    const r = el.getBoundingClientRect()
-    bounds.left = Math.min(bounds.left, r.left)
-    bounds.top = Math.min(bounds.top, r.top)
-    bounds.right = Math.max(bounds.right, r.right)
-    bounds.bottom = Math.max(bounds.bottom, r.bottom)
-  })
-  brain.value?.setAgentRect({
-    x: bounds.left,
-    y: bounds.top,
-    w: bounds.right - bounds.left,
-    h: bounds.bottom - bounds.top,
-  })
+  let requiredHeight = 0
+  const center = document.querySelector('.agent-center')
+  if (center && !agentCollapsed.value) {
+    requiredHeight = agentBottom.value + center.getBoundingClientRect().height + 8
+  }
+  const bubbleEl = document.querySelector('.bubble')
+  if (bubbleEl) {
+    requiredHeight = Math.max(
+      requiredHeight,
+      bubble.value.bottom + bubbleEl.getBoundingClientRect().height + 8,
+    )
+  }
+  brain.value?.setOverlayHeight(requiredHeight)
 })
 
 // 渲染通道（PetBrain 回调驱动）：bloub 程序化 SVG 或 Petdex 图集
