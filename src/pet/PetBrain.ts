@@ -21,6 +21,7 @@ import { behaviorWeights, pickWeighted } from '../behavior/weights'
 import { StateMachine, type PetFsmState } from '../behavior/StateMachine'
 import { World } from '../desktop/World'
 import { pickCanned, type CannedKind } from '../ai/Personality'
+import { AgentLayer, isAgentKind, type AgentKind } from './agentSync'
 import { PetAnimation } from './PetAnimation'
 import { PetRenderer } from './PetRenderer'
 import { EmotionSystem, type ExprKind } from './PetState'
@@ -147,6 +148,11 @@ export class PetBrain {
   private cursorEye = { dx: 0, dy: 0 }
   private headTiltTarget = 0
   private speedNow = 0
+
+  // M6 聊天感知：ZCode 编码代理事件覆盖层（纯逻辑在 agentSync.ts）
+  private agentLayer = new AgentLayer()
+  /** 最近一次聊天活动时间（含 AI 流式回复）：agent 视觉避让 5s（§9.5） */
+  private lastChatAt = 0
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -324,6 +330,8 @@ export class PetBrain {
       await listen<{ kind: string; message?: string }>('pet://external-event', (p) =>
         this.onExternalEvent(p.kind, p.message),
       ),
+      // M6 托盘"聊天感知"开关（前端闸：关闭时 agent-* 事件直接丢弃）
+      await listen('tray://toggle-agentsync', () => this.toggleAgentSync()),
       // 聊天流式输出：气泡实时跟字（附录 B13）
       await listen<{ text: string }>('pet://say-stream', (p) => this.showStream(p.text)),
     )
@@ -771,6 +779,9 @@ export class PetBrain {
     // 重摔落地：爆散重组彩蛋优先于一切状态（附录 A.2）
     if (this.now() < this.hardLandUntil) return 'burst'
     if (this.dragging) return 'egg'
+    // M6 agent 覆盖层（§9.2）：编码代理状态压过 idle 系视觉
+    const av = this.agentVisualFor(state)
+    if (av) return av.bloub as StateId
     switch (state) {
       case 'WALK':
       case 'RUN':
@@ -806,6 +817,9 @@ export class PetBrain {
   /** FSM 状态 → Petdex 状态行 id（整改计划 §5.2 映射；sleep 走 v2 自定义行前的兜底） */
   private petRowFor(state: PetFsmState): string {
     if (this.dragging) return 'jumping'
+    // M6 agent 覆盖层（§9.2）：与 bloub 侧同一套优先级
+    const av = this.agentVisualFor(state)
+    if (av) return av.row
     switch (state) {
       case 'WALK':
       case 'RUN':
@@ -984,6 +998,10 @@ export class PetBrain {
 
   /** 事件种类 → 行为/表情映射：构建结果、通知等外部事件即插即用 */
   onExternalEvent(kind: string, message?: string): void {
+    if (isAgentKind(kind)) {
+      this.onAgentEvent(kind)
+      return
+    }
     const text = (message || '').trim()
     switch (kind) {
       case 'build-ok':
@@ -1005,6 +1023,99 @@ export class PetBrain {
         if (text) this.say(text)
         break
     }
+  }
+
+  // ---------- M6 聊天感知（ZCode 编码代理状态联动，§九） ----------
+
+  /**
+   * agent-* 事件入口。优先级（§9.3-3）：低于拖拽/抛掷、睡眠、用户聊天；
+   * 高于 idle wander/自言自语。总开关 agentSync 关闭时直接丢弃。
+   */
+  private onAgentEvent(kind: AgentKind): void {
+    if (!this.settings.agentSync) return
+    if (this.dragging) return
+    if (this.fsm.current === 'SLEEP') return // 睡眠优先（PermissionRequest 走 M5 审批闭环独立通道）
+    const now = Date.now()
+    // 聊天豁免窗（§9.5）：用户对话/AI 回复进行中，agent 弱状态避让 5s
+    if (
+      (kind === 'agent-thinking' || kind === 'agent-working' || kind === 'agent-session') &&
+      now - this.lastChatAt < 5000
+    ) {
+      return
+    }
+    const d = this.agentLayer.ingest(kind, now)
+    if (!d.transitioned) return
+    switch (d.kind) {
+      case 'agent-session':
+        this.anim.burst('sparkle', 3)
+        this.emotion.v.curiosity = Math.min(100, this.emotion.v.curiosity + 3)
+        break
+      case 'agent-failed':
+        this.anim.burst('sweat', 2)
+        break
+      case 'agent-done':
+        this.anim.burst('sparkle', 4)
+        this.emotion.v.happiness = Math.min(100, this.emotion.v.happiness + 3)
+        this.emotion.v.affection = Math.min(100, this.emotion.v.affection + 2)
+        this.playChime()
+        break
+      default:
+        break
+    }
+    if (d.bubble) {
+      const lineKind: Record<string, CannedKind> = {
+        'agent-session': 'agentStart',
+        'agent-thinking': 'agentThinking',
+        'agent-failed': 'agentFailed',
+        'agent-done': 'agentDone',
+      }
+      this.say(this.pickCanned(lineKind[d.kind]))
+    }
+  }
+
+  /** 覆盖视觉是否可作用于该 FSM 状态：物理/移动/进入状态不覆盖（§9.3-3） */
+  private agentVisualFor(state: PetFsmState) {
+    if (state === 'WALK' || state === 'RUN' || state === 'ENTER' || state === 'JUMP' || state === 'FALL' || state === 'LAY') {
+      return null
+    }
+    const a = this.agentLayer.active(this.now())
+    return a && this.settings.agentSync ? a.visual : null
+  }
+
+  /** 完成提示音（§9.3-5）：WebAudio 双音，静默失败不影响任何逻辑 */
+  private playChime(): void {
+    try {
+      const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (!Ctor) return
+      const ctx = new Ctor()
+      const notes = [659.25, 880] // E5 → A5
+      notes.forEach((f, i) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.value = f
+        const t = ctx.currentTime + i * 0.12
+        gain.gain.setValueAtTime(0.0001, t)
+        gain.gain.exponentialRampToValueAtTime(0.12, t + 0.02)
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.35)
+        osc.connect(gain).connect(ctx.destination)
+        osc.start(t)
+        osc.stop(t + 0.4)
+      })
+      window.setTimeout(() => void ctx.close().catch(() => {}), 1200)
+    } catch {
+      /* 提示音失败静默 */
+    }
+  }
+
+  /** 托盘"聊天感知"开关：翻转 agentSync、持久化、同步托盘文字 */
+  private toggleAgentSync(): void {
+    const on = !this.settings.agentSync
+    this.settings = { ...this.settings, agentSync: on }
+    if (!on) this.agentLayer.reset()
+    void import('../store').then(({ saveSettings }) => saveSettings(this.settings))
+    void invoke('set_tray_agentsync', { checked: on }).catch(() => {})
+    this.say(on ? '聊天感知开启啦，ZCode 干活我站岗～' : '聊天感知关掉了，专心陪你。')
   }
 
   // ---------- 待机序列（附录 A.2） ----------
@@ -1075,6 +1186,7 @@ export class PetBrain {
   /** 气泡副作用统一出口：情绪结算、打断睡觉、TTS、记忆事件 */
   private applyBubbleEffects(item: PetSayPayload): void {
     if (item.fromChat) {
+      this.lastChatAt = Date.now()
       this.emotion.onChat(item.emotion ?? 'neutral')
       // AI 表达关切时让表情可见（faceFor 的 concern 分支此前不可达）
       if (item.emotion === 'concern') this.emotion.setTransient('concern', 3600, this.now())
@@ -1096,6 +1208,7 @@ export class PetBrain {
   showStream(text: string): void {
     if (!text) return
     this.streaming = true
+    this.lastChatAt = Date.now()
     this.bubble = { visible: true, text, bottom: 0 }
     this.bubbleUntil = this.now() + 3000
     this.pushBubble()
@@ -1352,6 +1465,9 @@ export class PetBrain {
   applySettings(s: Settings): void {
     const prevScale = this.settings.scale
     this.settings = s
+    // M6：托盘"聊天感知"文字与设置面板保持一处事实源；关闭时清空覆盖层
+    void invoke('set_tray_agentsync', { checked: !!s.agentSync }).catch(() => {})
+    if (!s.agentSync) this.agentLayer.reset()
     if (Math.abs(prevScale - s.scale) > 0.01 && isTauri) {
       void invoke('set_pet_scale', { scale: s.scale }).then(() =>
         invoke<{ x: number; y: number; w: number; h: number; scale: number }>('get_window_info', {

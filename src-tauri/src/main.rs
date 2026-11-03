@@ -70,6 +70,7 @@ fn main() {
             ai::ai_chat,
             tts::tts_speak,
             tray::toggle_paused,
+            tray::set_tray_agentsync,
             store::read_data,
             store::write_data,
             store::frontend_log,

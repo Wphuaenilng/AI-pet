@@ -116,6 +116,8 @@ export interface Settings {
   windowInteract: boolean
   ttsEnabled: boolean
   proactive: boolean
+  /** M6 聊天感知：ZCode 编码代理事件联动（默认关；托盘/设置面板双入口） */
+  agentSync: boolean
   /** 强制鼠标穿透：开启后点击穿过宠物（全局热键 Ctrl+Shift+U 可切换） */
   clickThrough: boolean
   /** bloub 定制：形状/颜色/静止表情（仅 baseFace 状态可见），id 见 bloub/skins.ts、expressions.ts */
@@ -141,6 +143,7 @@ export const DEFAULT_SETTINGS: Settings = {
   windowInteract: true,
   ttsEnabled: false,
   proactive: true,
+  agentSync: false,
   clickThrough: false,
   bloubShape: 'cercle',
   bloubColor: 'encre',

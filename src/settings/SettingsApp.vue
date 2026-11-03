@@ -480,6 +480,7 @@ function applyPreset(p: { url: string; model: string }) {
         <label class="switch"><input v-model="s.ttsEnabled" type="checkbox" @change="scheduleSave" /><i />语音播报</label>
         <label class="switch"><input v-model="s.proactive" type="checkbox" @change="scheduleSave" /><i />主动说话</label>
         <label class="switch" title="开启后点击会穿透宠物（全局热键 Ctrl+Shift+U 也可切换）"><input v-model="s.clickThrough" type="checkbox" @change="scheduleSave" /><i />鼠标穿透</label>
+        <label class="switch" title="宠物实时反映 ZCode 等编码代理的工作状态（需运行 scripts/zcode-hook/install.py 注册钩子）"><input v-model="s.agentSync" type="checkbox" @change="scheduleSave" /><i />聊天感知</label>
         <label class="switch" title="随系统启动自动运行"><input v-model="autostart" type="checkbox" @change="toggleAutostart" /><i />开机自启</label>
       </div>
     </section>

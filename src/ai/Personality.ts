@@ -61,6 +61,10 @@ export type CannedKind =
   | 'summoned'
   | 'dropped'
   | 'busy'
+  | 'agentStart'
+  | 'agentThinking'
+  | 'agentDone'
+  | 'agentFailed'
 
 export const CANNED: Record<PersonalityId, Record<CannedKind, string[]>> = {
   gentle: {
@@ -76,6 +80,10 @@ export const CANNED: Record<PersonalityId, Record<CannedKind, string[]>> = {
     summoned: ['我回来啦！有没有想我呀', '召唤我有什么事嘛？'],
     dropped: ['哇啊！谢谢你接住我', '呼，安全落地～'],
     busy: ['窗口切来切去的，在忙什么呀？', '看起来你在多线作战哦，需要我陪着吗？'],
+    agentStart: ['开工！我在这儿陪着你～', '新的任务开始啦，加油加油！', '坐好坐好，陪你一起开工～'],
+    agentThinking: ['在想了…', '嗯嗯，它正在想呢', '别急别急，思考中～'],
+    agentDone: ['完成！辛苦啦～', '搞定！你超棒的！', '这一轮跑完啦，休息一下喝口水？'],
+    agentFailed: ['这步失败了，别急，看看报错', '哎呀，卡了一下…看看哪里不对', '没关系，失败一次而已，再来～'],
   },
   practical: {
     welcome: ['已就位。需要时叫我。', '我是{name}，开始工作吧。', '桌面巡检完毕，没有异常。'],
@@ -90,6 +98,10 @@ export const CANNED: Record<PersonalityId, Record<CannedKind, string[]>> = {
     summoned: ['在。说事。', '我一直在，是你没看托盘。'],
     dropped: ['落地完成。', '下次轻点放。'],
     busy: ['窗口切换频繁。建议：先关掉无关的。', '多任务进行中，需要计时提醒吗？'],
+    agentStart: ['会话开始。', '收到新任务，开始吧。'],
+    agentThinking: ['处理中。', '它在算，等着就好。'],
+    agentDone: ['完成。', '本轮结束，结果已出。', '跑完了。检查一下输出。'],
+    agentFailed: ['失败。看报错，别猜。', '出错了。先读错误信息再动手。'],
   },
 }
 

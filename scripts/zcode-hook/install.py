@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""ZCode hooks 幂等安装器（整改计划 M6-P1，§9.3-6）。
+
+用法：
+  python install.py install    # 注册钩子（重复运行不重复添加）
+  python install.py uninstall  # 只删除本安装器添加的组，不动其他配置
+  python install.py status     # 查看注册状态
+
+只改用户级 ~/.zcode/cli/config.json 的 hooks.events（§9.5：不动工作区配置、
+不动配置里其他字段）。本安装器添加的匹配器组带 "id": "ai-pet" 标记，
+uninstall 仅按该标记删除。
+"""
+import json
+import sys
+from pathlib import Path
+
+HOOK_ID = "ai-pet"
+HOOK_SCRIPT = Path(__file__).resolve().parent / "pet_hook.py"
+CONFIG_PATH = Path.home() / ".zcode" / "cli" / "config.json"
+
+# 6 个事件（P1 映射表 §9.2；PostToolUse 留 P2）
+EVENTS = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "PermissionRequest",
+]
+
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        # 配置损坏时不要覆盖：让使用者先处理
+        print(f"错误：{CONFIG_PATH} 不是合法 JSON，请先修复。")
+        sys.exit(1)
+
+
+def make_group():
+    return {
+        "id": HOOK_ID,
+        "matcher": "*",
+        "hooks": [
+            {
+                "type": "process",
+                "command": sys.executable,
+                "args": [str(HOOK_SCRIPT)],
+                "timeout": 1000,
+            }
+        ],
+    }
+
+
+def cmd_install():
+    cfg = load_config()
+    hooks = cfg.get("hooks")
+    if hooks is None:
+        hooks = {}
+        cfg["hooks"] = hooks
+    if not isinstance(hooks, dict):
+        print("错误：config.json 的 hooks 字段不是对象，无法安装。")
+        sys.exit(1)
+    was_disabled = hooks.get("enabled") is False
+    if was_disabled:
+        hooks["enabled"] = True
+    events = hooks.get("events")
+    if events is None:
+        events = {}
+        hooks["events"] = events
+    if not isinstance(events, dict):
+        print("错误：config.json 的 hooks.events 字段不是对象，无法安装。")
+        sys.exit(1)
+
+    group = make_group()
+    added, updated = [], []
+    for name in EVENTS:
+        lst = events.get(name)
+        if lst is None:
+            lst = []
+            events[name] = lst
+        if not isinstance(lst, list):
+            print(f"错误：hooks.events.{name} 不是数组，无法安装。")
+            sys.exit(1)
+        ours = [g for g in lst if isinstance(g, dict) and g.get("id") == HOOK_ID]
+        if ours:
+            ours[0].update(group)
+            updated.append(name)
+        else:
+            lst.append(dict(group))
+            added.append(name)
+
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if was_disabled:
+        print("注意：hooks.enabled 原为 false，已置为 true。")
+    print(f"已安装：新增 {len(added)} 个事件（{', '.join(added) or '无'}），"
+          f"更新 {len(updated)} 个（{', '.join(updated) or '无'}）。")
+    print(f"配置：{CONFIG_PATH}")
+
+
+def cmd_uninstall():
+    if not CONFIG_PATH.exists():
+        print("未安装（配置文件不存在）。")
+        return
+    cfg = load_config()
+    hooks = cfg.get("hooks")
+    if not isinstance(hooks, dict):
+        print("未安装。")
+        return
+    events = hooks.get("events")
+    if not isinstance(events, dict):
+        print("未安装。")
+        return
+    removed = []
+    for name, lst in list(events.items()):
+        if not isinstance(lst, list):
+            continue
+        kept = [g for g in lst if not (isinstance(g, dict) and g.get("id") == HOOK_ID)]
+        if len(kept) != len(lst):
+            removed.append(name)
+            if kept:
+                events[name] = kept
+            else:
+                del events[name]
+    if removed:
+        CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"已卸载：移除 {len(removed)} 个事件（{', '.join(removed)}），其他配置未动。")
+    else:
+        print("未安装（没有找到 ai-pet 钩子组）。")
+
+
+def cmd_status():
+    print(f"配置：{CONFIG_PATH}")
+    print(f"桥接：http://127.0.0.1:7788（宠物运行时）")
+    if not CONFIG_PATH.exists():
+        print("状态：未安装（配置文件不存在）")
+        return
+    cfg = load_config()
+    hooks = cfg.get("hooks")
+    if not isinstance(hooks, dict):
+        print("状态：未安装（无 hooks 配置）")
+        return
+    print(f"hooks.enabled: {hooks.get('enabled')}")
+    events = hooks.get("events")
+    if not isinstance(events, dict):
+        print("状态：未安装（无 hooks.events）")
+        return
+    ok = 0
+    for name in EVENTS:
+        lst = events.get(name)
+        ours = (
+            [g for g in lst if isinstance(g, dict) and g.get("id") == HOOK_ID]
+            if isinstance(lst, list)
+            else []
+        )
+        if ours:
+            ok += 1
+            g = ours[0]
+            hooks_def = (g.get("hooks") or [{}])[0]
+            print(f"  [✓] {name}: {hooks_def.get('command')} {hooks_def.get('args')}")
+        else:
+            print(f"  [ ] {name}")
+    print(f"状态：{ok}/{len(EVENTS)} 事件已注册" + ("（已安装）" if ok == len(EVENTS) else ""))
+
+
+COMMANDS = {"install": cmd_install, "uninstall": cmd_uninstall, "status": cmd_status}
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if cmd not in COMMANDS:
+        print(__doc__)
+        sys.exit(1)
+    COMMANDS[cmd]()
