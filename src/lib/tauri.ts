@@ -120,6 +120,8 @@ export interface Settings {
   agentSync: boolean
   /** 强制鼠标穿透：开启后点击穿过宠物（全局热键 Ctrl+Shift+U 可切换） */
   clickThrough: boolean
+  /** M3 贴边 Mini：拖到屏幕左右边缘松手后缩成小条，悬停/审批时探出 */
+  miniEdge: boolean
   /** bloub 定制：形状/颜色/静止表情（仅 baseFace 状态可见），id 见 bloub/skins.ts、expressions.ts */
   bloubShape: string
   bloubColor: string
@@ -145,6 +147,7 @@ export const DEFAULT_SETTINGS: Settings = {
   proactive: true,
   agentSync: false,
   clickThrough: false,
+  miniEdge: true,
   bloubShape: 'cercle',
   bloubColor: 'encre',
   bloubExpression: 'attentif',

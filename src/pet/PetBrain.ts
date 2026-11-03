@@ -155,6 +155,10 @@ export class PetBrain {
   private lastChatAt = 0
   /** M5 审批横幅的 css 矩形（PetApp 同步）：命中判定用，null = 无横幅 */
   private approvalRect: { x: number; y: number; w: number; h: number } | null = null
+  // M3 贴边 Mini：拖到屏幕左右边缘后缩起（pet.x 屏外化，窗口映射自然裁剪），悬停/审批探出
+  private mini: { side: 'left' | 'right'; m: MonitorInfo } | null = null
+  private miniPeeking = false
+  private miniLastHoverT = 0
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -475,6 +479,9 @@ export class PetBrain {
 
     // 眼睛看向鼠标
     this.trackCursorEyes(dt)
+
+    // M3 贴边 Mini 状态推进（在命中判定/窗口同步之前，保证本帧几何一致）
+    this.updateMini(dt)
 
     // 鼠标穿透判定
     this.updateHitTest()
@@ -1181,6 +1188,7 @@ export class PetBrain {
 
   say(text: string, opts: Partial<PetSayPayload> = {}): void {
     if (!text) return
+    if (this.mini && !this.miniPeeking) return // Mini 缩起时气泡在屏外，别排队积攒
     this.bubbleQueue.push({ text, emotion: opts.emotion, action: opts.action, fromChat: opts.fromChat })
     if (this.bubbleQueue.length > 2) this.bubbleQueue.shift()
   }
@@ -1257,6 +1265,16 @@ export class PetBrain {
     this.closeMenu()
     if (this.dragging) return
     const c = this.world.cursor
+    // Mini 条上点住：先探出回屏内再进入拖拽，退出 Mini 状态
+    if (this.mini) {
+      const m = this.mini.m
+      const edgeX = this.mini.side === 'right' ? m.x + m.w : m.x
+      this.pet.x = this.mini.side === 'right' ? edgeX - 56 * this.u : edgeX + 56 * this.u
+      this.mini = null
+      this.miniPeeking = false
+      this.winX = this.pet.x - this.winW / 2
+      this.markPosDirty()
+    }
     this.dragging = true
     this.dragStart = { x: c.x, y: c.y, t: performance.now() }
     this.dragOrigin = { x: this.pet.x, feetY: this.pet.feetY }
@@ -1325,6 +1343,65 @@ export class PetBrain {
     this.say(this.pickCanned('dropped'))
     this.settleHere()
     void emitAll('pet://memory-event', '被用户拎起来又放下')
+    // M3 贴边 Mini：拖到屏幕左右边缘（24u 内）松手 → 缩起成小条
+    if (this.settings.miniEdge) {
+      const m = this.world.monitorAt(this.pet.x)
+      if (m) {
+        const u = this.u
+        if (this.pet.x > m.x + m.w - 24 * u) this.enterMini('right', m)
+        else if (this.pet.x < m.x + 24 * u) this.enterMini('left', m)
+      }
+    }
+  }
+
+  private enterMini(side: 'left' | 'right', m: MonitorInfo): void {
+    this.mini = { side, m }
+    this.miniPeeking = false
+    this.miniLastHoverT = 0
+    this.goal = new IdleGoal(this, 2) // 贴边时停止 wander，避免被行为目标带离边缘
+    this.goal.start()
+  }
+
+  /** M3 Mini 状态机：悬停/审批/聊天探出，离开 1.5s 缩回；pet.x 屏外化实现裁剪 */
+  private updateMini(dt: number): void {
+    if (!isTauri) return
+    if (this.mini && !this.settings.miniEdge) {
+      // 开关被关：归位到屏内边缘再退出
+      const m = this.mini.m
+      const edgeX = this.mini.side === 'right' ? m.x + m.w : m.x
+      this.pet.x = this.mini.side === 'right' ? edgeX - 56 * this.u : edgeX + 56 * this.u
+      this.mini = null
+      this.miniPeeking = false
+      this.markPosDirty()
+    }
+    const mini = this.mini
+    if (!mini || this.dragging) return
+    const m = mini.m
+    const u = this.u
+    const edgeX = mini.side === 'right' ? m.x + m.w : m.x
+    const c = this.world.cursor
+    const nearEdge = mini.side === 'right' ? c.x > edgeX - 28 : c.x < edgeX + 28
+    const inStripY = Math.abs(c.y - (this.pet.feetY - 40 * u)) < 90 * u
+    // 审批/聊天流式必须探出（§9.3-3：审批必须吵到人）
+    if ((nearEdge && inStripY) || this.approvalRect || this.streaming) {
+      this.miniPeeking = true
+      this.miniLastHoverT = this.now()
+    } else if (this.miniPeeking) {
+      // 探出保持：鼠标仍在附近宽限区就续期，否则 1.5s 后缩回
+      const stillNear = mini.side === 'right' ? c.x > edgeX - 220 : c.x < edgeX + 220
+      if (stillNear && inStripY) this.miniLastHoverT = this.now()
+      if (this.now() - this.miniLastHoverT > 1500) this.miniPeeking = false
+    }
+    // 缩起：中心屏外 18u（球半径约 34u，露出 ~16u 小条）；探出：整个身体回屏内
+    const targetX = this.miniPeeking
+      ? mini.side === 'right'
+        ? edgeX - 56 * u
+        : edgeX + 56 * u
+      : mini.side === 'right'
+        ? edgeX + 18 * u
+        : edgeX - 18 * u
+    this.pet.x += (targetX - this.pet.x) * Math.min(1, dt * 8)
+    this.markPosDirty()
   }
 
   private onPatted(): void {
