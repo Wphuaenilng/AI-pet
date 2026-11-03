@@ -795,6 +795,8 @@ export class PetBrain {
     // 重摔落地：爆散重组彩蛋优先于一切状态（附录 A.2）
     if (this.now() < this.hardLandUntil) return 'burst'
     if (this.dragging) return 'egg'
+    // M3 Mini 缩起：趴低身体、双眼朝屏内；探出后恢复原 FSM/agent 动作
+    if (this.mini && !this.miniPeeking) return this.mini.side === 'left' ? 'peek-left' : 'peek-right'
     // M6 agent 覆盖层（§9.2）：编码代理状态压过 idle 系视觉
     const av = this.agentVisualFor(state)
     if (av) return av.bloub as StateId

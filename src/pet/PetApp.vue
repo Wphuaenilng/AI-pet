@@ -74,6 +74,14 @@ const botWrap = computed(() =>
         bottom: botBottom.value + 'px'
       }
 )
+// Petdex 没有专用趴边帧：缩起时把整只转向屏幕内侧，头部探出、身体藏在屏外。
+// bloub 通道使用引擎自己的 peek-left/right 姿态，不叠加这个 CSS 动作。
+const miniAtlasClass = computed(() => {
+  if (!bloub.value.pack) return ''
+  if (bloub.value.state === 'peek-left') return 'mini-peek-left'
+  if (bloub.value.state === 'peek-right') return 'mini-peek-right'
+  return ''
+})
 const atlasUrl = computed(() =>
   bloub.value.pack ? convertFileSrc(bloub.value.packSheet) : ''
 )
@@ -152,7 +160,7 @@ function menuHidePet() {
       <span>VS Code — 假窗口（演示用）</span>
     </div>
     <!-- 渲染通道：Petdex 图集（条件渲染）或 bloub 身体（SVG），垫在 Canvas 之下；Canvas 只画粒子 -->
-    <div class="pet-bot" :style="botWrap">
+    <div class="pet-bot" :class="miniAtlasClass" :style="botWrap">
       <PetAtlas
         v-if="bloub.pack"
         :sheet-url="atlasUrl"
@@ -216,8 +224,17 @@ function menuHidePet() {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
+  transform-origin: 50% 50%;
+  transition: transform 0.28s ease;
   pointer-events: none; /* 点击全部交给 Canvas 层 */
   z-index: 0;
+}
+/* 右缘头朝左、左缘头朝右；轻微缩小避免旋转后的图集越出宠物窗口 */
+.pet-bot.mini-peek-right {
+  transform: translateX(-50%) rotate(-90deg) scale(0.88);
+}
+.pet-bot.mini-peek-left {
+  transform: translateX(-50%) rotate(90deg) scale(0.88);
 }
 .pet-canvas {
   position: absolute;

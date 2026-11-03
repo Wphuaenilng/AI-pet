@@ -199,16 +199,24 @@ describe('etats', () => {
   })
 
   it('tient les transitions d interface hors du catalogue', () => {
-    // 本地新增：move（桌宠行走弹跳）与 swirl 一样不进参考视频目录
+    // 本地新增：move 与 Mini 左右趴边姿态都不进参考视频目录
     const horsSequence = STATES.filter((s) => !SEQUENCE.includes(s.id)).map((s) => s.id)
-    expect(horsSequence).toEqual(['swirl', 'move'])
+    expect(horsSequence).toEqual(['swirl', 'move', 'peek-left', 'peek-right'])
   })
 
   it('montre le visage sur les etats a visage, le cache sur les autres', () => {
-    const avec: StateId[] = ['idle', 'wink', 'wide', 'notify', 'egg', 'hexagon']
+    const avec: StateId[] = ['idle', 'wink', 'wide', 'notify', 'egg', 'hexagon', 'peek-left', 'peek-right']
     const sans: StateId[] = ['thinking', 'alert', 'exclaim', 'sleep']
     for (const id of avec) expect(new BotEngine(100, id).sample(0.9).eyes.length).toBe(2)
     for (const id of sans) expect(new BotEngine(100, id).sample(0.9).eyes.length).toBe(0)
+  })
+
+  it('deplace le regard Mini vers l interieur de l ecran', () => {
+    for (const [id, direction] of [['peek-left', 1], ['peek-right', -1]] as const) {
+      const frame = new BotEngine(100, id).sample(0.9)
+      const eyeX = frame.eyes.map((eye) => Number(eye.matrix.slice(7, -1).split(',')[4]))
+      expect(Math.sign(eyeX.reduce((a, b) => a + b, 0))).toBe(direction)
+    }
   })
 
   it('creuse une encoche autour de la pastille de notification', () => {

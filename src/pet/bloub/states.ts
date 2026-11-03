@@ -159,6 +159,9 @@ export type StateId =
   | 'egg'
   | 'hexagon'
   | 'move'
+  /** M3 贴边 Mini 的本地姿态：身体趴低，双眼朝屏幕内露出；不进参考动画目录 */
+  | 'peek-left'
+  | 'peek-right'
   | 'play'
   | 'orbit'
   | 'burst'
@@ -202,6 +205,24 @@ function dotPulse(t: number, index: number): number {
   const p = ((((t - index * 0.5) / 1.5) % 1) + 1) % 1
   const k = p < 0.5 ? 0.5 - 0.5 * Math.cos(p * TAU) : 0
   return clamp(k * 2)
+}
+
+/** Mini 趴边：inward=1 朝右（左边缘），-1 朝左（右边缘）；身体与双眼一起向屏内偏移。 */
+function edgePeekPose(inward: 1 | -1, t: number): Pose {
+  const breath = Math.sin((t * TAU) / 2.8) * 0.018
+  return base({
+    sil: circle(1, { sx: 1.06, sy: 0.7 + breath }),
+    offX: inward * 0.46,
+    offY: 0.24,
+    gaze: { yaw: inward * 10, pitch: 16, roll: inward * -7 },
+    split: 16.5,
+    eyes: pair(0.21, 0.38),
+    // 两只小爪搭在趴低身体下沿；靠屏外的一只自然被窗口裁掉
+    dots: [
+      { x: inward * 0.32, y: 0.83, r: 0.17, opacity: 1 },
+      { x: inward * -0.2, y: 0.86, r: 0.15, opacity: 1 }
+    ]
+  })
 }
 
 export const STATES: StateDef[] = [
@@ -595,6 +616,26 @@ export const STATES: StateDef[] = [
         offY: -0.1 * hop
       })
     }
+  },
+
+  {
+    id: 'peek-left',
+    duration: 2.8,
+    morph: 0.32,
+    baseFace: false,
+    baseBody: false,
+    blinkIn: false,
+    pose: (t) => edgePeekPose(1, t)
+  },
+
+  {
+    id: 'peek-right',
+    duration: 2.8,
+    morph: 0.32,
+    baseFace: false,
+    baseBody: false,
+    blinkIn: false,
+    pose: (t) => edgePeekPose(-1, t)
   }
 ]
 
@@ -618,6 +659,8 @@ export const POSES: Record<StateId, number> = {
   egg: 0.8,
   hexagon: 0.8,
   move: 0.25,
+  'peek-left': 0.8,
+  'peek-right': 0.8,
   play: 0.9,
   orbit: 1.2,
   swirl: 0.5,
