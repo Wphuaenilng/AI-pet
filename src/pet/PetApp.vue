@@ -18,7 +18,11 @@ const mockWindow = ref<{ x: number; y: number; w: number; h: number } | null>(nu
 // M6 并发代理消息：独立列表，不与普通单气泡混用
 const agentMessages = ref<AgentMessage[]>([])
 const agentCollapsed = ref(false)
-const agentBottom = computed(() => Math.max(bubble.value.bottom, 90))
+const bubbleHeight = ref(0)
+// 数据仍分属普通聊天与代理中心，但视觉上共用一条纵向消息列，避免互相遮盖。
+const agentBottom = computed(
+  () => Math.max(bubble.value.bottom, 90) + (bubble.value.visible ? bubbleHeight.value + 8 : 0),
+)
 const contentOffset = computed(() => bubble.value.offsetX ?? 0)
 const contentTransform = computed(
   () => `translateX(calc(-50% + ${contentOffset.value}px))`,
@@ -48,8 +52,14 @@ watch(approval, async (v) => {
 })
 
 // 同步命中区域，并按内容实际高度让原生透明窗口向上扩展，而非裁掉顶部。
-watch([agentMessages, agentCollapsed, bubble], async () => {
+watch([agentMessages, agentCollapsed, bubble, agentBottom], async () => {
   await nextTick()
+  const bubbleEl = document.querySelector('.bubble')
+  const bubbleRect = bubbleEl && bubble.value.visible ? bubbleEl.getBoundingClientRect() : null
+  const nextBubbleHeight = bubbleRect?.height ?? 0
+  if (Math.abs(nextBubbleHeight - bubbleHeight.value) > 0.5) {
+    bubbleHeight.value = nextBubbleHeight
+  }
   const elements = document.querySelectorAll('.agent-center, .agent-toggle')
   if (!elements.length || agentMessages.value.length === 0) {
     brain.value?.setAgentRect(null)
@@ -85,14 +95,10 @@ watch([agentMessages, agentCollapsed, bubble], async () => {
     includeWidth(center)
     requiredHeight = agentBottom.value + center.getBoundingClientRect().height + 8
   }
-  const bubbleEl = document.querySelector('.bubble')
   // v-if 离场动画期间节点仍存在；不可见气泡不能阻止原生窗口恢复基础尺寸。
-  if (bubbleEl && bubble.value.visible) {
+  if (bubbleEl && bubbleRect) {
     includeWidth(bubbleEl)
-    requiredHeight = Math.max(
-      requiredHeight,
-      bubble.value.bottom + bubbleEl.getBoundingClientRect().height + 8,
-    )
+    requiredHeight = Math.max(requiredHeight, bubble.value.bottom + bubbleRect.height + 8)
   }
   brain.value?.setOverlaySize(requiredWidth, requiredHeight)
 })
