@@ -208,4 +208,12 @@ describe('屏幕边缘内移', () => {
     expect(inwardOffset(60, 0, 2560, 300)).toBe(98)
     expect(inwardOffset(2500, 0, 2560, 300)).toBe(-98)
   })
+
+  it('短气泡只内移实际所需距离，不按长气泡宽度让位', () => {
+    const shortOffset = inwardOffset(2521, 0, 2560, 80, 5.6)
+    const longOffset = inwardOffset(2521, 0, 2560, 266, 5.6)
+    expect(shortOffset).toBeCloseTo(-6.6)
+    expect(longOffset).toBeCloseTo(-99.6)
+    expect(Math.abs(shortOffset)).toBeLessThan(Math.abs(longOffset))
+  })
 })

@@ -80,15 +80,19 @@ watch([agentMessages, agentCollapsed, bubble, agentBottom], async () => {
     })
   }
   let requiredHeight = 0
+  let requiredWidth = 0
   const center = document.querySelector('.agent-center')
   if (center && !agentCollapsed.value) {
-    requiredHeight = agentBottom.value + center.getBoundingClientRect().height + 8
+    const rect = center.getBoundingClientRect()
+    requiredHeight = agentBottom.value + rect.height + 8
+    requiredWidth = rect.width
   }
   // v-if 离场动画期间节点仍存在；不可见气泡不能阻止原生窗口恢复基础尺寸。
   if (bubbleRect) {
     requiredHeight = Math.max(requiredHeight, bubble.value.bottom + bubbleRect.height + 8)
+    requiredWidth = Math.max(requiredWidth, bubbleRect.width)
   }
-  brain.value?.setOverlayHeight(requiredHeight)
+  brain.value?.setOverlayHeight(requiredHeight, requiredWidth)
 })
 
 // 渲染通道（PetBrain 回调驱动）：bloub 程序化 SVG 或 Petdex 图集

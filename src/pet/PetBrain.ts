@@ -36,6 +36,7 @@ import { PetRenderer } from './PetRenderer'
 import { EmotionSystem, type ExprKind } from './PetState'
 import type { StateId } from './bloub/states'
 import { ATLAS_H, DOT_R } from './metrics'
+import { DRAG_FEEDBACK_TAG, shouldPeekMiniForOverlay } from './miniEdge'
 
 /** bloub 状态 id（附录 §4.3 映射）：身体动画由 vendored bloub 引擎渲染 */
 const BLOUB_EXPR: Record<ExprKind, string> = {
@@ -132,6 +133,8 @@ export class PetBrain {
   private winX = 0
   private winY = 0
   private overlayHeightTarget: number | null = null
+  /** 当前可见消息的实际 CSS 宽度；null 表示新消息尚未完成首次测量。 */
+  private overlayContentCssWidth: number | null = null
   private overlayHeightInFlight = false
   private overlayResizeAfter = 0
   private overlayHeightSent = 0
@@ -1265,13 +1268,25 @@ export class PetBrain {
     return (this.settings.petPack ? ATLAS_H : DOT_R * 2) * this.u
   }
 
+  /** 当前消息的真实宽度；首次渲染前才回退到最大气泡宽度。 */
+  private overlayContentWidth(): number {
+    const cssWidth = this.canvas.clientWidth || this.winW
+    const physicalPerCss = this.winW / cssWidth
+    const maxWidth = Math.min(380 * physicalPerCss, this.winW - 16 * physicalPerCss)
+    const measured =
+      this.overlayContentCssWidth === null
+        ? maxWidth
+        : Math.min(maxWidth, this.overlayContentCssWidth * physicalPerCss)
+    return Math.min(this.winW, Math.max(measured, this.approvalRect?.w ?? 0))
+  }
+
   /** 气泡底边贴着头顶算；靠边时普通气泡与代理卡片一起向屏幕内侧移动。 */
   private pushBubble(): void {
     const dpr = this.dpr > 0 ? this.dpr : 1
     const bottom = Math.max(0, (PAD_BOTTOM * this.u + this.headRoom()) / dpr) + 24
     const cssWidth = this.canvas.clientWidth || this.winW
     const physicalPerCss = this.winW / cssWidth
-    const contentWidth = Math.min(380 * physicalPerCss, this.winW - 16 * physicalPerCss)
+    const contentWidth = this.overlayContentWidth()
     const m = this.monitor
     const offsetPhysical = m
       ? inwardOffset(this.winX + this.winW / 2, m.x, m.x + m.w, contentWidth, 8 * this.u)
@@ -1375,7 +1390,7 @@ export class PetBrain {
     // 真拖起来了（不是点摸）才喊"放我下来"
     if (!this.dragSaid && this.dragMoved > 26 * this.u) {
       this.dragSaid = true
-      this.say(this.pickCanned('dragged'))
+      this.say(this.pickCanned('dragged'), { tag: DRAG_FEEDBACK_TAG })
     }
     // 拖到哪停到哪：把脚底钳在本屏工作区内（可以拖到屏幕顶端，但不会拖出屏外）
     const m = this.world.monitorAt(c.x) ?? this.world.monitors.find((x) => x.primary) ?? null
@@ -1423,7 +1438,7 @@ export class PetBrain {
       return
     }
     this.emotion.onDragEnd()
-    this.say(this.pickCanned('dropped'))
+    this.say(this.pickCanned('dropped'), { tag: DRAG_FEEDBACK_TAG })
     this.settleHere()
     void emitAll('pet://memory-event', '被用户拎起来又放下')
     // M3 贴边 Mini：拖到屏幕左右边缘（24u 内）松手 → 缩起成小条
@@ -1465,10 +1480,14 @@ export class PetBrain {
     const c = this.world.cursor
     const nearEdge = mini.side === 'right' ? c.x > edgeX - 28 : c.x < edgeX + 28
     const inStripY = Math.abs(c.y - (this.pet.feetY - 40 * u)) < 90 * u
-    const hasOverlay = Boolean(
-      this.approvalRect || this.streaming || this.bubble.visible || this.agentMessages.size > 0,
-    )
-    // 任何消息或审批出现时都先探出，给宠物本体和气泡预留完整显示空间。
+    const hasOverlay = shouldPeekMiniForOverlay({
+      approvalVisible: Boolean(this.approvalRect),
+      streaming: this.streaming,
+      bubbleVisible: this.bubble.visible,
+      bubbleTag: this.bubbleTag,
+      agentMessageCount: this.agentMessages.size,
+    })
+    // 新消息或审批出现时探出；拖拽反馈不抵消用户刚完成的贴边操作。
     if ((nearEdge && inStripY) || hasOverlay) {
       this.miniPeeking = true
       this.miniLastHoverT = this.now()
@@ -1478,7 +1497,7 @@ export class PetBrain {
       if (stillNear && inStripY) this.miniLastHoverT = this.now()
       if (this.now() - this.miniLastHoverT > 1500) this.miniPeeking = false
     }
-    // 缩起：中心屏外 18u；普通探出只露出身体，有消息时额外内移，预留固定气泡区。
+    // 缩起：中心屏外 18u；普通探出只露出身体，有消息时按实际内容宽度预留空间。
     let targetX = this.miniPeeking
       ? mini.side === 'right'
         ? edgeX - 56 * u
@@ -1487,9 +1506,7 @@ export class PetBrain {
         ? edgeX + 18 * u
         : edgeX - 18 * u
     if (this.miniPeeking && hasOverlay) {
-      const cssWidth = this.canvas.clientWidth || this.winW
-      const physicalPerCss = this.winW / cssWidth
-      const contentWidth = Math.min(380 * physicalPerCss, this.winW - 16 * physicalPerCss)
+      const contentWidth = this.overlayContentWidth()
       const reserve = Math.max(0, contentWidth + 8 * u - this.winW / 2)
       targetX =
         mini.side === 'right'
@@ -1605,9 +1622,10 @@ export class PetBrain {
     return this.dragging || this.pet.airborne || performance.now() < this.overlayResizeAfter
   }
 
-  /** 宽度固定；PetApp 只测量内容高度，移动时保留最新目标以避免定位竞争。 */
-  setOverlayHeight(contentHeight: number): void {
+  /** 原生窗口宽度固定；PetApp 同步内容实际宽高，移动时保留最新高度目标。 */
+  setOverlayHeight(contentHeight: number, contentWidth: number): void {
     if (!isTauri) return
+    this.overlayContentCssWidth = contentWidth
     this.overlayHeightTarget = contentHeight
     if (!this.overlayHeightInFlight && !this.overlayResizeBlocked()) void this.syncOverlayHeight()
   }

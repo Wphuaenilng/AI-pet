@@ -11,3 +11,7 @@ gui-test-screenshots/
 desktop-ai-pet-ui.html
 design-assets/
 .diag/
+
+# 本地开发辅助 / 打包产物
+.workbuddy/
+Desktop-AI-Pet_*_setup.exe
