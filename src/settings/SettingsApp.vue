@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   DEFAULT_SETTINGS,
   emitAll,
+  getLabel,
   invoke,
   isTauri,
   type EmotionPayload,
@@ -12,6 +13,18 @@ import { listen } from '../lib/tauri'
 import { PERSONALITIES } from '../ai/Personality'
 import { SHAPES, COLORS } from '../pet/bloub/skins'
 import { EXPRESSIONS } from '../pet/bloub/expressions'
+import PetBot from '../pet/bloub/PetBot.vue'
+import { KnowledgeIndex, embedConfigOf } from '../ai/rag'
+import {
+  ANIM_GROUPS,
+  ANIM_OPTIONS,
+  ANIM_SLOTS,
+  animOptionZh,
+  animSlotZh,
+  effectiveAnimMap,
+  type AnimGroupId,
+  type AnimSlotId,
+} from '../pet/animMap'
 import { testConnection } from '../ai/AIClient'
 import {
   SCALE_MAX,
@@ -77,6 +90,125 @@ const BLOUB_EXPRS = EXPRESSIONS.map((x) => ({ id: x.id, zh: EXPR_ZH[x.id] ?? x.i
 function setBloub(key: 'bloubShape' | 'bloubColor' | 'bloubExpression', id: string) {
   s[key] = id
   scheduleSave()
+}
+
+// 动画选择库：场景 → bloub 动画（默认值/校验单源 pet/animMap.ts，存档稀疏存储）
+const animSel = ref<AnimSlotId>('think')
+const animMap = computed(() => effectiveAnimMap(s.bloubAnims))
+const animPreviewState = computed(() => animMap.value[animSel.value])
+
+function slotsOf(group: AnimGroupId) {
+  return ANIM_SLOTS.filter((x) => x.group === group)
+}
+
+function setSlotAnim(slot: AnimSlotId, id: string) {
+  s.bloubAnims = { ...s.bloubAnims, [slot]: id }
+  // 预览跟着刚改的场景走，改完立刻能看到效果
+  animSel.value = slot
+  scheduleSave()
+}
+
+function resetSlotAnims() {
+  s.bloubAnims = {}
+  scheduleSave()
+}
+
+// RAG 知识库（M7）：导入/删除/重建索引；检索本体在 ai/rag.ts
+const kbIdx = ref<KnowledgeIndex | null>(null)
+const kbList = ref<{ id: string; name: string; addedAt: number; chunks: number }[]>([])
+const kbStats = ref({ docs: 0, chunks: 0, embedded: 0 })
+const kbBusy = ref('')
+const kbMsg = ref('')
+const kbFile = ref<HTMLInputElement | null>(null)
+
+function refreshKb() {
+  const idx = kbIdx.value
+  if (!idx) return
+  kbList.value = idx.list()
+  kbStats.value = idx.stats()
+}
+
+/** 其他窗口（聊天窗同步记忆向量）落盘后重载；序号防乱序。
+ *  进行中的导入/重建持有自己的实例引用，不受重载影响 */
+let kbLoadSeq = 0
+function reloadKbFromDisk() {
+  const seq = ++kbLoadSeq
+  KnowledgeIndex.load()
+    .then((idx) => {
+      if (seq !== kbLoadSeq) return
+      kbIdx.value = idx
+      refreshKb()
+    })
+    .catch((e) => console.warn('知识库重载失败', e))
+}
+
+async function importKbFiles(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = [...(input.files ?? [])]
+  input.value = ''
+  const idx = kbIdx.value
+  if (!idx || !files.length) return
+  // 读文件也计入 busy，防止读取期间再次触发导入
+  kbBusy.value = '导入中……'
+  try {
+    const texts: { name: string; text: string }[] = []
+    const skipped: string[] = []
+    for (const f of files) {
+      if (f.size > 2_100_000) {
+        skipped.push(f.name)
+        continue
+      }
+      texts.push({ name: f.name, text: await f.text() })
+    }
+    const r = await idx.addDocs(texts, embedConfigOf(s))
+    kbMsg.value =
+      (r.added
+        ? `已入库 ${r.added} 篇（共 ${r.chunks} 块）${r.embedded ? '，已向量化 ✓' : '；未配置语义检索，按字面关键词匹配'}`
+        : '没有可入库的内容') +
+      (skipped.length ? `；已跳过超 2MB：${skipped.join('、')}` : '')
+    refreshKb()
+  } catch (err) {
+    kbMsg.value = '导入失败：' + String(err).slice(0, 60)
+  } finally {
+    kbBusy.value = ''
+  }
+}
+
+async function rebuildKb() {
+  const idx = kbIdx.value
+  if (!idx) return
+  try {
+    const n = await idx.rebuildAll(embedConfigOf(s), (done, total) => {
+      kbBusy.value = `重建中 ${done}/${total} 块……`
+    })
+    kbMsg.value =
+      n < 0
+        ? '重建完成，但向量化失败——请检查「语义检索」配置，当前按字面关键词匹配'
+        : embedConfigOf(s)
+          ? `重建完成，已向量化 ${n} 块`
+          : '重建完成；未配置语义检索，按字面关键词匹配'
+    refreshKb()
+  } catch (err) {
+    kbMsg.value = '重建失败：' + String(err).slice(0, 60)
+  } finally {
+    kbBusy.value = ''
+  }
+}
+
+async function removeKbDoc(id: string) {
+  await kbIdx.value?.removeDoc(id)
+  refreshKb()
+}
+
+async function clearKb() {
+  if (!(await askConfirm('确定清空知识库？所有导入的文档将无法恢复。'))) return
+  await kbIdx.value?.clear()
+  kbMsg.value = ''
+  refreshKb()
+}
+
+function onSlotSelect(slot: AnimSlotId, e: Event) {
+  setSlotAnim(slot, (e.target as HTMLSelectElement).value)
 }
 
 // Petdex 宠物包（M2）：~/.petdex/pets 下的已安装列表
@@ -158,7 +290,19 @@ onMounted(async () => {
     await listen<string>('store://corrupted', (name) => {
       void showAlert(`本地存档 ${name}.json 损坏，已自动备份为 ${name}.json.bak 并重置为默认值。`)
     }),
+    // 聊天窗同步记忆集合落盘后重载，避免本窗旧副本在删除/重建时把新数据盖回去
+    await listen<{ label: string }>('kb://updated', (p) => {
+      if (p?.label === getLabel()) return
+      reloadKbFromDisk()
+    }),
   )
+  // 知识库索引：load() 内部有 isTauri 守卫，浏览器环境得到空内存索引（便于 UI 预览）
+  try {
+    kbIdx.value = await KnowledgeIndex.load()
+    refreshKb()
+  } catch (e) {
+    console.warn('知识库加载失败', e)
+  }
   if (isTauri) {
     try {
       autostart.value = (await invoke<boolean>('autostart_status')) ?? false
@@ -303,30 +447,72 @@ function applyPreset(p: { url: string; model: string }) {
   scheduleSave()
 }
 
+// 顶部页签：420 宽的窗口塞 9 张卡太长，按用途分四页；记住上次停留的页
+type SettingsTab = 'chat' | 'look' | 'act' | 'data'
+const SETTINGS_TABS: { id: SettingsTab; zh: string }[] = [
+  { id: 'chat', zh: '对话' },
+  { id: 'look', zh: '外观' },
+  { id: 'act', zh: '行为' },
+  { id: 'data', zh: '数据' },
+]
+
+function initialTab(): SettingsTab {
+  try {
+    const v = localStorage.getItem('settings-tab')
+    if (v && SETTINGS_TABS.some((t) => t.id === v)) return v as SettingsTab
+  } catch {
+    /* 隐私模式等拿不到 localStorage，用默认页 */
+  }
+  return 'chat'
+}
+
+const tab = ref<SettingsTab>(initialTab())
+
+function switchTab(t: SettingsTab) {
+  tab.value = t
+  try {
+    localStorage.setItem('settings-tab', t)
+  } catch {
+    /* 同上，存不进就仅本次生效 */
+  }
+}
+
 </script>
 
 <template>
   <div class="settings-page">
     <!-- 宠物状态卡 -->
-    <section class="hero card drag-region">
+    <section class="hero card drag-region" data-tauri-drag-region>
       <span class="hero-avatar emoji-hero no-drag">⚫</span>
-      <div class="hero-info">
+      <div class="hero-info" data-tauri-drag-region>
         <div class="hero-name">
           {{ s.petName || '团子' }}
-          <span class="chip">{{ PERSONALITIES[s.personality].label }}</span>
+          <span class="chip hero-chip">{{ PERSONALITIES[s.personality].label }}</span>
         </div>
-        <div class="hero-mood">{{ moodEmoji }} {{ emotion ? `现在${moodText}` : '等待宠物上线…' }}</div>
+        <div class="hero-mood">{{ emotion ? `现在${moodText} · 本地行为在线` : '等待宠物上线…' }}</div>
         <div class="hero-actions no-drag">
-          <button @click="openChat">💬 聊天</button>
-          <button @click="summon">🙌 召唤</button>
-          <button @click="togglePause">⏯ 暂停/继续</button>
+          <button class="primary" @click="openChat">聊天</button>
+          <button @click="summon">召唤</button>
+          <button @click="togglePause">暂停 / 继续</button>
         </div>
       </div>
       <button class="win-close no-drag" title="关闭" @click="closeWindow">×</button>
     </section>
 
-    <!-- 情绪五维 -->
-    <section class="card">
+    <!-- 页签栏：宠物状态卡常驻，其余九张卡按用途分四页 -->
+    <nav class="tab-bar no-drag">
+      <button
+        v-for="t in SETTINGS_TABS"
+        :key="t.id"
+        :class="{ active: tab === t.id }"
+        @click="switchTab(t.id)"
+      >
+        {{ t.zh }}
+      </button>
+    </nav>
+
+    <!-- 情绪五维（行为页） -->
+    <section v-if="tab === 'act'" class="card">
       <div class="card-title">心情状态</div>
       <div class="emo-grid">
         <div v-for="(v, k) in emotion?.values ?? null" :key="k" class="emo-row">
@@ -342,8 +528,8 @@ function applyPreset(p: { url: string; model: string }) {
       </div>
     </section>
 
-    <!-- AI 配置 -->
-    <section class="card">
+    <!-- AI 配置（对话页） -->
+    <section v-if="tab === 'chat'" class="card">
       <div class="card-title">AI 配置 <span class="sub">OpenAI Compatible · 密钥只存本地</span></div>
       <label class="field">
         <span>API Base URL</span>
@@ -376,10 +562,57 @@ function applyPreset(p: { url: string; model: string }) {
         <span v-if="testState === 'ok'" class="test-ok">✓ 连接成功：{{ testMsg }}</span>
         <span v-else-if="testState === 'fail'" class="test-fail">✗ {{ testMsg }}</span>
       </div>
+      <div class="rag-block">
+        <div class="rag-title">语义检索（RAG）<span>可选，供下方知识库使用</span></div>
+        <label class="field">
+          <span>Embedding URL</span>
+          <input v-model="s.embedBaseUrl" placeholder="http://localhost:11434/v1" @input="scheduleSave" />
+        </label>
+        <label class="field">
+          <span>Embedding Key</span>
+          <input v-model="s.embedApiKey" type="password" autocomplete="off" placeholder="本地服务可留空" @input="scheduleSave" />
+        </label>
+        <label class="field">
+          <span>Embedding 模型</span>
+          <input v-model="s.embedModel" placeholder="bge-m3 / text-embedding-3-small" @input="scheduleSave" />
+        </label>
+        <p class="hint">
+          留空 = 知识库按字面关键词检索。配好后走向量语义匹配（DeepSeek 没有此接口；
+          本地 Ollama 先 <code>ollama pull bge-m3</code>，URL 填 http://localhost:11434/v1，Key 留空）。
+          换模型后去「知识库」点重建索引。
+        </p>
+      </div>
     </section>
 
-    <!-- 人格 -->
-    <section class="card">
+    <!-- 知识库（RAG，对话页） -->
+    <section v-if="tab === 'chat'" class="card">
+      <div class="card-title">知识库<span class="sub">聊天时自动检索、注明来源</span></div>
+      <p class="hint">
+        导入 txt / md 文档（角色设定、项目笔记、规则手册……），小黑点聊天时会检索相关内容作答，
+        气泡下标注来源文档。长期记忆也会一起参与语义检索。
+      </p>
+      <div class="kb-status">
+        {{ kbStats.docs }} 篇文档 · {{ kbStats.chunks }} 块 · 已向量化 {{ kbStats.embedded }} 块
+      </div>
+      <div class="kb-actions">
+        <button class="ghost" :disabled="!!kbBusy" @click="kbFile?.click()">导入文档</button>
+        <button class="ghost" :disabled="!!kbBusy || !kbStats.chunks" @click="rebuildKb">重建索引</button>
+        <button class="danger" :disabled="!!kbBusy || !kbStats.docs" @click="clearKb">清空</button>
+        <input ref="kbFile" type="file" multiple accept=".txt,.md,.markdown,text/plain" hidden @change="importKbFiles" />
+      </div>
+      <p v-if="kbBusy" class="hint kb-busy">{{ kbBusy }}</p>
+      <p v-if="kbMsg" class="hint">{{ kbMsg }}</p>
+      <div v-if="kbList.length" class="kb-list">
+        <div v-for="d in kbList" :key="d.id" class="kb-item">
+          <span class="kb-name" :title="d.name">{{ d.name }}</span>
+          <span class="kb-chunks">{{ d.chunks }} 块</span>
+          <button class="kb-del" title="删除该文档" @click="removeKbDoc(d.id)">×</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 人格（行为页） -->
+    <section v-if="tab === 'act'" class="card">
       <div class="card-title">人格</div>
       <div class="persona-grid">
         <button
@@ -395,8 +628,8 @@ function applyPreset(p: { url: string; model: string }) {
       </div>
     </section>
 
-    <!-- 宠物外观 -->
-    <section class="card">
+    <!-- 宠物外观（外观页） -->
+    <section v-if="tab === 'look'" class="card">
       <div class="card-title">宠物外观</div>
       <label class="field">
         <span>形状</span>
@@ -462,8 +695,46 @@ function applyPreset(p: { url: string; model: string }) {
       </label>
     </section>
 
-    <!-- 行为 -->
-    <section class="card">
+    <!-- 动画选择库（外观页） -->
+    <section v-if="tab === 'look'" class="card">
+      <div class="card-title">动画<span class="sub">每个场景用什么动画，点场景名即预览</span></div>
+      <div class="anim-preview">
+        <PetBot
+          :size="132"
+          :state="animPreviewState"
+          :shape="s.bloubShape"
+          :color="s.bloubColor"
+          :expression="s.bloubExpression"
+        />
+        <div class="anim-preview-info">
+          <div class="anim-preview-slot">{{ animSlotZh(animSel) }}</div>
+          <div class="anim-preview-anim">{{ animOptionZh(animMap[animSel]) }}</div>
+          <div class="hint">预览实时播放；桌面上还会叠加视线与物理行为。</div>
+          <button class="anim-reset" @click="resetSlotAnims">恢复默认动画</button>
+        </div>
+      </div>
+      <p v-if="s.petPack" class="hint">当前使用 Petdex 宠物包，动画由包的精灵图播放，这里的映射不生效。</p>
+      <template v-for="g in ANIM_GROUPS" :key="g.id">
+        <div class="anim-group">{{ g.zh }}<span>{{ g.desc }}</span></div>
+        <div class="anim-grid">
+          <div
+            v-for="slot in slotsOf(g.id)"
+            :key="slot.id"
+            class="anim-row"
+            :class="{ active: animSel === slot.id }"
+            @click="animSel = slot.id"
+          >
+            <span class="anim-slot">{{ slot.zh }}</span>
+            <select :value="animMap[slot.id]" @change="onSlotSelect(slot.id, $event)" @click.stop>
+              <option v-for="o in ANIM_OPTIONS" :key="o.id" :value="o.id">{{ o.zh }}</option>
+            </select>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- 行为（行为页） -->
+    <section v-if="tab === 'act'" class="card">
       <div class="card-title">行为与外观</div>
       <label class="field">
         <span>宠物名字</span>
@@ -486,8 +757,8 @@ function applyPreset(p: { url: string; model: string }) {
       </div>
     </section>
 
-    <!-- 记忆 -->
-    <section class="card">
+    <!-- 记忆（数据页） -->
+    <section v-if="tab === 'data'" class="card">
       <div class="card-title">记忆</div>
       <p class="hint">
         长期记忆是一个可编辑的 <code>memory.md</code>，和设置文件放在同一目录——用记事本打开就能直接改，改完自动生效。
@@ -499,8 +770,8 @@ function applyPreset(p: { url: string; model: string }) {
       </div>
     </section>
 
-    <!-- 备份与恢复 -->
-    <section class="card">
+    <!-- 备份与恢复（数据页） -->
+    <section v-if="tab === 'data'" class="card">
       <div class="card-title">备份与恢复</div>
       <p class="hint">
         把设置、心情状态、记忆整体导出到文档目录的备份文件夹（设置→宠物外观、名字、AI 配置、记忆都在内），
@@ -523,13 +794,25 @@ function applyPreset(p: { url: string; model: string }) {
 
     <div v-if="firstRun" class="onboard">
       <div class="onboard-card">
-        <div class="onboard-title">👋 欢迎！三步开始</div>
+        <div class="onboard-title">欢迎！三步开始</div>
+        <p class="onboard-sub">你的桌面伙伴已经准备好了。</p>
         <ol>
-          <li>选一个喜欢的宠物和人格（下面就能选）</li>
-          <li>配置 AI（可跳过——没有 AI 它也能散步、睡觉、追鼠标）</li>
-          <li>右下角托盘找到 🦊 图标：聊天 / 召唤 / 设置都在那里</li>
+          <li>
+            <b>选一个喜欢的宠物和人格</b>
+            <span>在下方即可随时更换。</span>
+          </li>
+          <li>
+            <b>配置 AI，也可以跳过</b>
+            <span>没有 AI，它也能散步、睡觉、追鼠标。</span>
+          </li>
+          <li>
+            <b>从右下角托盘找到它</b>
+            <span>聊天、召唤和设置都在那里。</span>
+          </li>
         </ol>
-        <button class="primary" @click="firstRun = false">知道啦</button>
+        <div class="onboard-actions">
+          <button class="primary" @click="firstRun = false">知道啦</button>
+        </div>
       </div>
     </div>
 
@@ -555,54 +838,54 @@ function applyPreset(p: { url: string; model: string }) {
 <style scoped>
 .settings-page {
   min-height: 100vh;
-  background: #fff7f2;
+  background: #f2f3f5;
   padding: 14px 14px 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  color: #3d2e26;
+  color: #1f2329;
   position: relative;
 }
 .card {
   background: #fff;
-  border: 1px solid #f3e4da;
-  border-radius: 22px;
-  padding: 14px 16px;
-  box-shadow: 0 2px 10px rgba(140, 100, 80, 0.06);
+  border: 1px solid #ececee;
+  border-radius: 20px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
 }
 .card-title {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
 .card-title .sub {
   font-size: 11px;
-  color: #b3a294;
+  color: #9aa1aa;
   font-weight: 400;
 }
 .hero {
   display: flex;
-  gap: 14px;
+  gap: 12px;
   align-items: center;
-  background: linear-gradient(135deg, #fff, #ffefe8);
+  background: linear-gradient(135deg, #fff, #f5f8fb);
 }
 .hero-avatar {
-  width: 64px;
-  height: 64px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   object-fit: cover;
-  border: 3px solid #ffd9cf;
+  border: 3px solid #d7e6fd;
 }
 .emoji-hero {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #ffe9e1;
-  font-size: 34px;
+  background: #eaf3ff;
+  font-size: 30px;
 }
 .hero-info {
   flex: 1;
@@ -614,39 +897,53 @@ function applyPreset(p: { url: string; model: string }) {
   align-items: center;
   gap: 8px;
 }
-.chip {
-  font-size: 11px;
-  background: #ff7a59;
-  color: #fff;
-  padding: 2px 9px;
+/* hero 里的性格标签：浅蓝底蓝字（设计 06），压过后面的通用 .chip 规则 */
+.chip.hero-chip {
+  background: #eaf3ff;
+  color: #0b6ef0;
+  border: none;
   border-radius: 999px;
-  font-weight: 500;
+  padding: 3px 12px;
+  font-weight: 600;
 }
 .hero-mood {
   font-size: 12.5px;
-  color: #8c7a6e;
+  color: #747d87;
   margin: 4px 0 8px;
 }
 .hero-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  /* 420px 的窗口宽度下三颗按钮也要站一行：均分剩余宽度，绝不折行 */
+  flex-wrap: nowrap;
+  gap: 4px;
 }
 .hero-actions button {
-  border: 1px solid #f0dcd2;
-  background: #fff;
-  border-radius: 999px;
-  padding: 5px 10px;
+  border: none;
+  background: #f2f3f5;
+  border-radius: 10px;
+  padding: 7px 6px;
   font-size: 12px;
   cursor: pointer;
-  color: #3d2e26;
-  /* 宽度不够时整颗按钮换行，而不是把「聊天」二字拆成两行 */
-  flex: 0 0 auto;
+  color: #1f2329;
+  /* 弹性伸缩填满一行；文字保持整颗，最小宽度已验证在 420px 内放得下 */
+  flex: 1 1 auto;
+  justify-content: center;
   white-space: nowrap;
+  min-width: 0;
 }
 .hero-actions button:hover {
-  border-color: #ff7a59;
-  color: #ff7a59;
+  background: #eaf3ff;
+  color: #0b6ef0;
+}
+/* 主按钮（聊天）：设计 06 的蓝色实心 */
+.hero-actions button.primary {
+  background: #0b6ef0;
+  color: #fff;
+  padding: 7px 6px;
+}
+.hero-actions button.primary:hover {
+  background: #0a5fd0;
+  color: #fff;
 }
 .emo-grid {
   display: flex;
@@ -661,45 +958,45 @@ function applyPreset(p: { url: string; model: string }) {
 .emo-label {
   width: 34px;
   font-size: 12px;
-  color: #8c7a6e;
+  color: #747d87;
 }
 .emo-bar {
   flex: 1;
   height: 8px;
   border-radius: 999px;
-  background: #f6ebe4;
+  background: #eef0f2;
   overflow: hidden;
 }
 .emo-fill {
   height: 100%;
   border-radius: 999px;
   transition: width 0.6s ease;
-  background: #34c77b;
+  background: #0b6ef0;
 }
 .emo-fill.happiness {
-  background: #ffc53d;
+  background: #0b6ef0;
 }
 .emo-fill.energy {
-  background: #34c77b;
+  background: #0b6ef0;
 }
 .emo-fill.curiosity {
-  background: #b47cff;
+  background: #0b6ef0;
 }
 .emo-fill.affection {
-  background: #ff7a59;
+  background: #0b6ef0;
 }
 .emo-fill.boredom {
-  background: #6c8cff;
+  background: #b9c0c8;
 }
 .emo-val {
   width: 26px;
   text-align: right;
   font-size: 11px;
-  color: #b3a294;
+  color: #9aa1aa;
 }
 .emo-empty {
   font-size: 12px;
-  color: #b3a294;
+  color: #9aa1aa;
   padding: 4px 0;
 }
 .field {
@@ -710,21 +1007,22 @@ function applyPreset(p: { url: string; model: string }) {
 }
 .field > span {
   font-size: 12px;
-  color: #8c7a6e;
+  color: #747d87;
 }
 .field input {
-  border: 1.5px solid #f0e0d6;
+  border: 1px solid #e3e6ea;
   border-radius: 12px;
-  padding: 8px 11px;
+  padding: 9px 12px;
   font-size: 13px;
   outline: none;
-  background: #fffdfb;
-  color: #3d2e26;
+  background: #f7f8fa;
+  color: #1f2329;
   width: 100%;
   box-sizing: border-box;
 }
 .field input:focus {
-  border-color: #ff7a59;
+  border-color: #0b6ef0;
+  background: #fff;
 }
 /* range 不该继承文本框的边框/内边距；轨道颜色必须自己画，
    否则 WebView2 按系统深色模式把未填充部分渲染成黑条 */
@@ -741,28 +1039,29 @@ function applyPreset(p: { url: string; model: string }) {
 .field input[type='range']::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 999px;
-  background: #f0e0d6;
+  background: #e3e6ea;
 }
 .field input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
-  margin-top: -5px;
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
   border-radius: 50%;
-  background: #ff7a59;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  background: #fff;
+  border: 2px solid #0b6ef0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 .field input[type='range']::-moz-range-track {
   height: 6px;
   border-radius: 999px;
-  background: #f0e0d6;
+  background: #e3e6ea;
 }
 .field input[type='range']::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
-  border: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #0b6ef0;
   border-radius: 50%;
-  background: #ff7a59;
+  background: #fff;
 }
 .presets {
   display: flex;
@@ -771,31 +1070,35 @@ function applyPreset(p: { url: string; model: string }) {
   flex-wrap: wrap;
 }
 .presets button {
-  font-size: 11px;
-  border: 1px solid #f0dcd2;
-  background: #fff;
-  color: #8c7a6e;
-  border-radius: 999px;
-  padding: 3px 10px;
+  font-size: 12px;
+  border: none;
+  background: #f2f3f5;
+  color: #4b525c;
+  border-radius: 10px;
+  padding: 5px 12px;
   cursor: pointer;
 }
 .presets button:hover {
-  color: #ff7a59;
-  border-color: #ff7a59;
+  color: #0b6ef0;
+  background: #eaf3ff;
 }
 .key-row {
   display: flex;
   gap: 6px;
 }
 .ghost {
-  border: 1px solid #f0dcd2;
-  background: #fff;
-  border-radius: 12px;
+  border: none;
+  background: #f2f3f5;
+  border-radius: 10px;
   padding: 0 12px;
   font-size: 12px;
   cursor: pointer;
-  color: #8c7a6e;
+  color: #4b525c;
   white-space: nowrap;
+}
+.ghost:hover {
+  color: #0b6ef0;
+  background: #eaf3ff;
 }
 .test-row {
   display: flex;
@@ -805,7 +1108,7 @@ function applyPreset(p: { url: string; model: string }) {
 }
 .primary {
   border: none;
-  background: #ff7a59;
+  background: #0b6ef0;
   color: #fff;
   border-radius: 12px;
   padding: 8px 18px;
@@ -831,16 +1134,18 @@ function applyPreset(p: { url: string; model: string }) {
 }
 .persona-card {
   text-align: left;
-  border: 1.5px solid #f0e0d6;
-  background: #fffdfb;
-  border-radius: 16px;
+  border: 1.5px solid transparent;
+  background: #f2f3f5;
+  border-radius: 14px;
   padding: 11px 12px;
   cursor: pointer;
 }
 .persona-card.active {
-  border-color: #ff7a59;
-  background: #fff3ee;
-  box-shadow: 0 0 0 3px rgba(255, 122, 89, 0.14);
+  border-color: #0b6ef0;
+  background: #eaf3ff;
+}
+.persona-card.active .persona-head {
+  color: #0b6ef0;
 }
 .persona-head {
   font-size: 13.5px;
@@ -849,7 +1154,7 @@ function applyPreset(p: { url: string; model: string }) {
 }
 .persona-desc {
   font-size: 11.5px;
-  color: #8c7a6e;
+  color: #747d87;
   line-height: 1.5;
 }
 .pets-grid {
@@ -859,9 +1164,9 @@ function applyPreset(p: { url: string; model: string }) {
 }
 .pet-card {
   position: relative;
-  border: 1.5px solid #f0e0d6;
-  background: #fffdfb;
-  border-radius: 16px;
+  border: 1.5px solid transparent;
+  background: #f2f3f5;
+  border-radius: 14px;
   padding: 12px 8px 10px;
   cursor: pointer;
   display: flex;
@@ -870,8 +1175,8 @@ function applyPreset(p: { url: string; model: string }) {
   gap: 6px;
 }
 .pet-card.active {
-  border-color: #ff7a59;
-  box-shadow: 0 0 0 3px rgba(255, 122, 89, 0.14);
+  border-color: #0b6ef0;
+  background: #eaf3ff;
 }
 .pet-card img {
   width: 52px;
@@ -883,7 +1188,7 @@ function applyPreset(p: { url: string; model: string }) {
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  background: #f3ede6;
+  background: #f0f1f3;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -891,13 +1196,13 @@ function applyPreset(p: { url: string; model: string }) {
 }
 .pet-card-name {
   font-size: 11px;
-  color: #3d2e26;
+  color: #1f2329;
 }
 .using-chip {
   position: absolute;
   top: -8px;
   right: 6px;
-  background: #ff7a59;
+  background: #0b6ef0;
   color: #fff;
   font-size: 10px;
   border-radius: 999px;
@@ -921,42 +1226,42 @@ function applyPreset(p: { url: string; model: string }) {
   display: none;
 }
 .switch i {
-  width: 34px;
-  height: 20px;
+  width: 44px;
+  height: 26px;
   border-radius: 999px;
-  background: #eaded4;
+  background: #d9dde2;
   position: relative;
   transition: background 0.15s;
 }
 .switch i::after {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: #fff;
   transition: left 0.15s;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 .switch input:checked + i {
-  background: #ff7a59;
+  background: #0b6ef0;
 }
 .switch input:checked + i::after {
-  left: 16px;
+  left: 21px;
 }
 .hint {
   font-size: 12px;
-  color: #8c7a6e;
+  color: #747d87;
   line-height: 1.6;
   margin: 0 0 10px;
 }
 .danger {
-  border: 1px solid #f3c6c6;
-  color: #d84f4f;
-  background: #fff5f5;
-  border-radius: 12px;
+  border: none;
+  color: #e5484d;
+  background: #fdecec;
+  border-radius: 10px;
   padding: 7px 14px;
   font-size: 12.5px;
   cursor: pointer;
@@ -972,50 +1277,49 @@ function applyPreset(p: { url: string; model: string }) {
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
-  border: 1px solid #f3e4da;
+  border: 1px solid #ececee;
   border-radius: 12px;
-  background: #fffdfb;
+  background: #ffffff;
   font-size: 12px;
-  color: #3d2e26;
+  color: #1f2329;
 }
 .backup-name {
   flex: 1;
   font-variant-numeric: tabular-nums;
 }
 .backup-files {
-  color: #b3a294;
+  color: #9aa1aa;
   font-size: 11px;
   white-space: nowrap;
 }
 .foot {
   text-align: center;
   font-size: 11px;
-  color: #c4b3a5;
+  color: #aab1b9;
   padding-top: 2px;
 }
 .win-close {
   align-self: flex-start;
   margin-left: 6px;
-  border: 1px solid #f0dcd2;
-  background: #fff;
+  border: none;
+  background: #f2f3f5;
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: 10px;
   cursor: pointer;
   font-size: 15px;
-  color: #b3a294;
+  color: #747d87;
   line-height: 1;
   flex-shrink: 0;
 }
 .win-close:hover {
-  background: #ff7a59;
-  border-color: #ff7a59;
-  color: #fff;
+  background: #e3e6ea;
+  color: #1f2329;
 }
 .onboard {
   position: fixed;
   inset: 0;
-  background: rgba(61, 46, 38, 0.35);
+  background: rgba(15, 23, 42, 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1027,24 +1331,53 @@ function applyPreset(p: { url: string; model: string }) {
   border-radius: 22px;
   padding: 20px 22px;
   width: 320px;
-  box-shadow: 0 10px 40px rgba(61, 46, 38, 0.3);
+  box-shadow: 0 10px 40px rgba(15, 23, 42, 0.18);
 }
 .onboard-title {
-  font-size: 16px;
+  font-size: 19px;
   font-weight: 800;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+  color: #1f2329;
+}
+.onboard-sub {
+  font-size: 12.5px;
+  color: #747d87;
+  margin: 0 0 12px;
 }
 .onboard-card ol {
-  margin: 0 0 14px;
-  padding-left: 18px;
-  font-size: 12.5px;
-  color: #6f5d50;
-  line-height: 1.9;
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  counter-reset: step;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.onboard-card ol li {
+  counter-increment: step;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.onboard-card ol li b {
+  font-size: 13px;
+  color: #1f2329;
+}
+.onboard-card ol li b::before {
+  content: counter(step) '. ';
+}
+.onboard-card ol li span {
+  font-size: 12px;
+  color: #747d87;
+}
+.onboard-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 .dlg-mask {
   position: fixed;
   inset: 0;
-  background: rgba(61, 46, 38, 0.35);
+  background: rgba(15, 23, 42, 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1056,11 +1389,11 @@ function applyPreset(p: { url: string; model: string }) {
   border-radius: 20px;
   padding: 20px 22px 16px;
   width: 300px;
-  box-shadow: 0 10px 40px rgba(61, 46, 38, 0.3);
+  box-shadow: 0 10px 40px rgba(15, 23, 42, 0.18);
 }
 .dlg-text {
   font-size: 13.5px;
-  color: #3d2e26;
+  color: #1f2329;
   line-height: 1.7;
   margin: 0 0 16px;
 }
@@ -1070,24 +1403,29 @@ function applyPreset(p: { url: string; model: string }) {
   gap: 8px;
 }
 .dlg-ghost {
-  border: 1px solid #f0dcd2;
-  background: #fff;
-  color: #6f5d50;
-  border-radius: 12px;
+  border: none;
+  background: #f2f3f5;
+  color: #4b525c;
+  border-radius: 10px;
   padding: 8px 16px;
   font-size: 13px;
   cursor: pointer;
+}
+.dlg-ghost:hover {
+  color: #1f2329;
+  background: #e9ebee;
 }
 .saved-tip {
   position: fixed;
   top: 14px;
   right: 16px;
-  background: #34c77b;
-  color: #fff;
+  background: #fff;
+  color: #22a06b;
   font-size: 12px;
-  padding: 6px 14px;
+  font-weight: 600;
+  padding: 7px 14px;
   border-radius: 999px;
-  box-shadow: 0 4px 14px rgba(52, 199, 123, 0.4);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
   z-index: 30;
 }
 .fade-enter-active,
@@ -1099,7 +1437,7 @@ function applyPreset(p: { url: string; model: string }) {
   opacity: 0;
 }
 input[type='range'] {
-  accent-color: #ff7a59;
+  accent-color: #0b6ef0;
 }
 .chip-row {
   display: flex;
@@ -1111,41 +1449,276 @@ input[type='range'] {
   gap: 8px;
 }
 .mem-actions .ghost {
-  border: 1px solid #e8d9cf;
-  background: #fff;
-  border-radius: 8px;
-  padding: 5px 10px;
+  border: none;
+  background: #f2f3f5;
+  border-radius: 10px;
+  padding: 7px 12px;
   font-size: 12px;
-  color: #3d2e26;
+  color: #1f2329;
   cursor: pointer;
 }
 .mem-actions .ghost:hover {
-  border-color: #ff7a59;
-  color: #ff7a59;
+  color: #0b6ef0;
+  background: #eaf3ff;
 }
 .chip {
-  border: 1px solid #e8d9cf;
-  background: #fff;
-  border-radius: 8px;
-  padding: 3px 8px;
+  border: 1px solid transparent;
+  background: #f2f3f5;
+  border-radius: 10px;
+  padding: 5px 12px;
   font-size: 12px;
-  color: #3d2e26;
+  color: #1f2329;
   cursor: pointer;
 }
 .chip.active {
-  border-color: #ff7a59;
-  color: #ff7a59;
-  background: #fff4ef;
+  border-color: #0b6ef0;
+  color: #0b6ef0;
+  background: #eaf3ff;
 }
 .swatch {
   width: 22px;
   height: 22px;
   border-radius: 50%;
   border: 2px solid #fff;
-  box-shadow: 0 0 0 1px #e3d5ca;
+  box-shadow: 0 0 0 1px #d5d9de;
   cursor: pointer;
 }
 .swatch.active {
-  box-shadow: 0 0 0 2px #ff7a59;
+  box-shadow: 0 0 0 2px #0b6ef0;
+}
+.anim-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #f2f3f5;
+  border: 1px solid #ececee;
+  border-radius: 16px;
+  padding: 8px 12px 8px 4px;
+  margin-bottom: 10px;
+}
+.anim-preview-info {
+  flex: 1;
+  min-width: 0;
+}
+.anim-preview-slot {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.anim-preview-anim {
+  font-size: 12px;
+  color: #0b6ef0;
+  font-weight: 600;
+  margin: 2px 0 4px;
+}
+.anim-reset {
+  border: none;
+  background: #f2f3f5;
+  border-radius: 10px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: #4b525c;
+  cursor: pointer;
+  margin-top: 2px;
+  font-family: inherit;
+}
+.anim-reset:hover {
+  background: #eaf3ff;
+  color: #0b6ef0;
+}
+.anim-group {
+  font-size: 11px;
+  color: #9aa1aa;
+  font-weight: 600;
+  margin: 10px 0 5px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.anim-group span {
+  font-weight: 400;
+}
+.anim-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 6px;
+}
+.anim-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 3px 4px 3px 8px;
+  cursor: pointer;
+}
+.anim-row:hover {
+  background: #eaf3ff;
+}
+.anim-row.active {
+  border-color: #d7e6fd;
+  background: #eaf3ff;
+}
+.anim-slot {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.anim-row select {
+  border: 1px solid #e3e6ea;
+  background: #fff;
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: #1f2329;
+  padding: 2px;
+  max-width: 94px;
+  cursor: pointer;
+  font-family: inherit;
+}
+/* RAG：语义检索子块 + 知识库卡片 */
+.rag-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #ececee;
+}
+.rag-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.rag-title span {
+  font-size: 10.5px;
+  color: #9aa1aa;
+  font-weight: 400;
+}
+.kb-status {
+  font-size: 12px;
+  color: #747d87;
+  background: #f2f3f5;
+  border: 1px solid #ececee;
+  border-radius: 10px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+.kb-actions {
+  display: flex;
+  gap: 8px;
+}
+.kb-actions .ghost {
+  border: none;
+  background: #f2f3f5;
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: #1f2329;
+  cursor: pointer;
+}
+.kb-actions .ghost:hover:not(:disabled) {
+  color: #0b6ef0;
+  background: #eaf3ff;
+}
+.kb-actions .ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.kb-busy {
+  color: #0b6ef0;
+}
+.kb-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kb-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #ececee;
+  border-radius: 10px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.kb-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-chunks {
+  color: #9aa1aa;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.kb-del {
+  border: none;
+  background: none;
+  color: #9aa1aa;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+.kb-del:hover {
+  color: #e5484d;
+}
+/* 顶部页签：吸顶分段控件；新设计语言下用白凸起钮表示选中 */
+.tab-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  background: #e9ebee;
+  padding: 4px;
+  border-radius: 12px;
+}
+.tab-bar button {
+  flex: 1;
+  border: none;
+  background: transparent;
+  border-radius: 9px;
+  padding: 7px 0;
+  font-size: 12.5px;
+  color: #5c6470;
+  cursor: pointer;
+  font-family: inherit;
+}
+.tab-bar button.active {
+  background: #fff;
+  color: #0b6ef0;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.12);
+}
+.tab-bar button:not(.active):hover {
+  color: #1f2329;
+}
+</style>
+
+<!-- 非 scoped：滚动条属于文档根，scoped 选择器够不到 -->
+<style>
+/* 关键修复：滚动条常驻。页签间内容高矮不一，竖向滚动条出现/消失会让
+   布局横跳（切换时"抽搐"）。注意 scrollbar-gutter: stable 在配了
+   ::-webkit-scrollbar 自定义样式时会被 Chromium 忽略，所以直接常驻显示
+   滚动条；透明轨道让短页上的空槽位不显眼。 */
+html {
+  overflow-y: scroll;
+}
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #e3e6ea;
+  border-radius: 999px;
+  border: 2px solid #f2f3f5;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c2c9d1;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 </style>

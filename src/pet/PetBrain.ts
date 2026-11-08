@@ -34,6 +34,7 @@ import {
 import { PetAnimation } from './PetAnimation'
 import { PetRenderer } from './PetRenderer'
 import { EmotionSystem, type ExprKind } from './PetState'
+import { DEFAULT_ANIMS, effectiveAnimMap, AGENT_SLOT_BY_KIND, type AnimSlotId } from './animMap'
 import type { StateId } from './bloub/states'
 import { ATLAS_H, DOT_R } from './metrics'
 import { DRAG_FEEDBACK_TAG, shouldPeekMiniForOverlay } from './miniEdge'
@@ -825,45 +826,55 @@ export class PetBrain {
     this.markPosDirty()
   }
 
-  /** FSM 状态 → bloub 状态 id（整改计划 §4.3 映射表） */
+  /** 动画选择库（场景 → bloub 动画，设置面板可改）：settings 对象整体替换时按身份重建缓存 */
+  private animsCache: { src: Record<string, string>; map: Record<AnimSlotId, StateId> } | null = null
+  private slotAnim(slot: AnimSlotId): StateId {
+    const raw = this.settings.bloubAnims ?? {}
+    if (!this.animsCache || this.animsCache.src !== raw) {
+      this.animsCache = { src: raw, map: effectiveAnimMap(raw) }
+    }
+    return this.animsCache.map[slot] ?? DEFAULT_ANIMS[slot]
+  }
+
+  /** FSM 状态 → bloub 状态 id（整改计划 §4.3 映射表；场景动画可在设置里自选，见 animMap.ts） */
   private bloubStateFor(state: PetFsmState): StateId {
     // 重摔落地：爆散重组彩蛋优先于一切状态（附录 A.2）
-    if (this.now() < this.hardLandUntil) return 'burst'
-    if (this.dragging) return 'egg'
+    if (this.now() < this.hardLandUntil) return this.slotAnim('crash')
+    if (this.dragging) return this.slotAnim('drag')
     // M3 Mini 缩起：趴低身体、双眼朝屏内；探出后恢复原 FSM/agent 动作
     if (this.mini && !this.miniPeeking) return this.mini.side === 'left' ? 'peek-left' : 'peek-right'
     // M6 agent 覆盖层（§9.2）：编码代理状态压过 idle 系视觉
     const av = this.agentVisualFor(state)
-    if (av) return av.bloub as StateId
+    if (av) return av.bloub
     switch (state) {
       case 'WALK':
       case 'RUN':
       case 'ENTER':
-        return 'move'
+        return this.slotAnim('move')
       case 'SIT':
-        return 'hexagon'
+        return this.slotAnim('sit')
       case 'LAY':
-        return 'egg'
+        return this.slotAnim('lie')
       case 'SLEEP':
-        return 'sleep'
+        return this.slotAnim('sleep')
       case 'LOOK':
-        return 'wide'
+        return this.slotAnim('look')
       case 'PLAY':
-        return 'comet'
+        return this.slotAnim('play')
       case 'HAPPY':
-        return this.goal?.label.startsWith('dance') ? 'orbit' : 'wink'
+        return this.goal?.label.startsWith('dance') ? this.slotAnim('dance') : this.slotAnim('happy')
       case 'ANGRY':
-        return 'hexagon'
+        return this.slotAnim('angry')
       case 'SURPRISED':
-        return 'alert'
+        return this.slotAnim('surprised')
       case 'TALK':
-        return 'thinking'
+        return this.slotAnim('think')
       case 'JUMP':
-        return 'exclaim'
+        return this.slotAnim('jump')
       case 'FALL':
-        return 'alert'
+        return this.slotAnim('fall')
       default:
-        return 'idle'
+        return this.slotAnim('idle')
     }
   }
 
@@ -1158,12 +1169,14 @@ export class PetBrain {
   }
 
   /** 覆盖视觉是否可作用于该 FSM 状态：物理/移动/进入状态不覆盖（§9.3-3） */
-  private agentVisualFor(state: PetFsmState) {
+  private agentVisualFor(state: PetFsmState): { bloub: StateId; row: string } | null {
     if (state === 'WALK' || state === 'RUN' || state === 'ENTER' || state === 'JUMP' || state === 'FALL' || state === 'LAY') {
       return null
     }
     const a = this.agentLayer.active(this.now())
-    return a && this.settings.agentSync ? a.visual : null
+    if (!a || !this.settings.agentSync) return null
+    // bloub 动画走用户的场景映射（AGENT_VISUALS 里的值即默认映射）；图集行保持内置
+    return { bloub: this.slotAnim(AGENT_SLOT_BY_KIND[a.kind]), row: a.visual.row }
   }
 
   /**

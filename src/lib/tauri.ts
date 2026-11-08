@@ -107,6 +107,10 @@ export interface Settings {
   apiBaseUrl: string
   apiKey: string
   model: string
+  /** RAG 语义检索（M7）：OpenAI 兼容 /v1/embeddings，独立于聊天配置（DeepSeek 无此接口）；留空 = 降级字面检索 */
+  embedBaseUrl: string
+  embedApiKey: string
+  embedModel: string
   personality: PersonalityId
   petName: string
   species: Species
@@ -126,6 +130,8 @@ export interface Settings {
   bloubShape: string
   bloubColor: string
   bloubExpression: string
+  /** 动画选择库：场景 → bloub 动画 id（稀疏存储，缺省回落 pet/animMap.ts 的 DEFAULT_ANIMS） */
+  bloubAnims: Record<string, string>
   /** Petdex 宠物包（M2）：'' = 默认 bloub；否则为包目录绝对路径 */
   petPack: string
   /** 所选包的 spritesheet 绝对路径（与 petPack 一起写入） */
@@ -136,6 +142,9 @@ export const DEFAULT_SETTINGS: Settings = {
   apiBaseUrl: '',
   apiKey: '',
   model: '',
+  embedBaseUrl: '',
+  embedApiKey: '',
+  embedModel: '',
   personality: 'gentle',
   petName: '团子',
   species: 'dot',
@@ -151,6 +160,7 @@ export const DEFAULT_SETTINGS: Settings = {
   bloubShape: 'cercle',
   bloubColor: 'encre',
   bloubExpression: 'attentif',
+  bloubAnims: {},
   petPack: '',
   petPackSheet: '',
 }

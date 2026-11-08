@@ -1,0 +1,14 @@
+# 统一行尾：仓库存 LF，检出按平台转换，消除 LF/CRLF 混杂警告
+* text=auto
+
+# Windows 批处理必须 CRLF 才能可靠执行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制资源不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

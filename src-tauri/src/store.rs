@@ -87,6 +87,7 @@ pub fn write_text(app: AppHandle, name: String, content: String) -> Result<(), S
 /// 用记事本打开记忆文件，供用户直接编辑
 #[tauri::command]
 pub fn open_text(app: AppHandle, name: String) -> Result<(), String> {
+    check_name(&name)?;
     let path = data_dir(&app)?.join(&name);
     if !path.exists() {
         std::fs::write(&path, "").map_err(|e| e.to_string())?;

@@ -23,12 +23,17 @@ export function bigrams(s: string): Set<string> {
 
 /** 相关性：query 的 bigram 在 text 中的覆盖率（0..1） */
 export function relevanceScore(query: string, text: string): number {
-  const a = bigrams(query)
+  return bigramCoverage(bigrams(query), text)
+}
+
+/** 同 relevanceScore，但 query 的 bigram 集合由调用方算好复用（批量打分时避免每块重建） */
+export function bigramCoverage(grams: Set<string>, text: string): number {
+  if (!grams.size) return 0
   const b = bigrams(text)
-  if (!a.size || !b.size) return 0
+  if (!b.size) return 0
   let hit = 0
-  for (const g of a) if (b.has(g)) hit++
-  return hit / a.size
+  for (const g of grams) if (b.has(g)) hit++
+  return hit / grams.size
 }
 
 export class MemoryStore {
@@ -118,6 +123,11 @@ export class MemoryStore {
   /** 最近 N 轮对话，用于上下文 */
   recentMessages(n: number): { role: 'user' | 'assistant'; content: string }[] {
     return this.data.shortTerm.slice(-n).map((m) => ({ role: m.role, content: m.content }))
+  }
+
+  /** 长期记忆全部行（画像/事件/摘要），RAG mem 集合的数据源；snapshot() 刷新过磁盘镜像后取值最新 */
+  allLines(): string[] {
+    return [...this.sections.profile, ...this.sections.events, ...this.sections.digests]
   }
 
   /** AI 得知的用户信息 → memory.md 用户画像段 */

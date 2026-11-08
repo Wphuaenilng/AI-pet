@@ -11,34 +11,37 @@ pub struct TrayUi {
 }
 
 /// 设置面板改 agentSync 时同步托盘勾选状态（唯一事实源在前端 settings）
+/// 注意：前端页面加载后可能立即调用本命令，早于 create_tray 执行，
+/// 因此 TrayUi 必须在 setup 开头 manage（见 main.rs），这里再用 try_state 兜底
 #[tauri::command]
 pub fn set_tray_agentsync(app: AppHandle, checked: bool) {
-    if let Some(item) = app
-        .state::<TrayUi>()
-        .agentsync_item
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
-        let _ = item.set_checked(checked);
+    if let Some(ui) = app.try_state::<TrayUi>() {
+        if let Some(item) = ui
+            .agentsync_item
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            let _ = item.set_checked(checked);
+        }
     }
 }
 
 /// 统一的暂停状态切换：更新 PauseState、托盘菜单文字，并广播事件。
 /// 托盘菜单与设置面板都走这里，保证两处状态一致。
 pub fn set_paused_impl(app: &AppHandle, paused: bool) {
-    {
-        let state = app.state::<PauseState>();
+    if let Some(state) = app.try_state::<PauseState>() {
         *state.0.lock().unwrap_or_else(|e| e.into_inner()) = paused;
     }
-    if let Some(item) = app
-        .state::<TrayUi>()
-        .pause_item
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
-        let _ = item.set_text(if paused { "继续活动" } else { "暂停宠物" });
+    if let Some(ui) = app.try_state::<TrayUi>() {
+        if let Some(item) = ui
+            .pause_item
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            let _ = item.set_text(if paused { "继续活动" } else { "暂停宠物" });
+        }
     }
     let _ = app.emit("tray://pause", paused);
 }
@@ -47,11 +50,13 @@ pub fn set_paused_impl(app: &AppHandle, paused: bool) {
 /// 同步托盘菜单文字并广播事件，返回翻转后的状态
 #[tauri::command]
 pub fn toggle_paused(app: AppHandle) -> bool {
-    let paused = {
-        let state = app.state::<PauseState>();
-        let mut v = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        *v = !*v;
-        *v
+    let paused = match app.try_state::<PauseState>() {
+        Some(state) => {
+            let mut v = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            *v = !*v;
+            *v
+        }
+        None => false,
     };
     set_paused_impl(&app, paused);
     paused
@@ -80,11 +85,13 @@ pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .build(&app)?;
 
-    app.manage(PauseState(Mutex::new(false)));
-    app.manage(TrayUi {
-        pause_item: Mutex::new(Some(pause)),
-        agentsync_item: Mutex::new(Some(agentsync)),
-    });
+    // PauseState / TrayUi 已在 main.rs setup 开头 manage（避免前端早期 IPC 抢跑 panic），
+    // 这里只负责把真实菜单项句柄填进去
+    {
+        let ui = app.state::<TrayUi>();
+        *ui.pause_item.lock().unwrap_or_else(|e| e.into_inner()) = Some(pause);
+        *ui.agentsync_item.lock().unwrap_or_else(|e| e.into_inner()) = Some(agentsync);
+    }
 
     tray.on_menu_event(|app, event| {
         let id = event.id().as_ref();
@@ -96,11 +103,13 @@ pub fn create_tray(app: AppHandle) -> tauri::Result<()> {
                 let _ = crate::window::show_window_impl(app, "settings");
             }
             "pause" => {
-                let paused = {
-                    let state = app.state::<PauseState>();
-                    let mut v = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                    *v = !*v;
-                    *v
+                let paused = match app.try_state::<PauseState>() {
+                    Some(state) => {
+                        let mut v = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                        *v = !*v;
+                        *v
+                    }
+                    None => false,
                 };
                 set_paused_impl(app, paused);
             }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 /// 备份涵盖的存档文件（panic.log 等诊断文件除外）
-const BACKUP_FILES: &[&str] = &["settings.json", "petstate.json", "memory.json", "memory.md"];
+const BACKUP_FILES: &[&str] = &["settings.json", "petstate.json", "memory.json", "memory.md", "kb_docs.json"];
 const MANIFEST: &str = "backup.json";
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {

@@ -289,15 +289,26 @@ function menuHidePet() {
       <div class="approval-title">{{ approval.title }}</div>
       <div v-if="approval.detail" class="approval-detail">{{ approval.detail }}</div>
       <div class="approval-actions">
-        <button @click="decide('allowed')">允许 (Y)</button>
-        <button @click="decide('denied')">拒绝 (N)</button>
+        <button class="allow" @click="decide('allowed')">允许 (Y)</button>
+        <button class="deny" @click="decide('denied')">拒绝 (N)</button>
       </div>
     </div>
 
-    <!-- 右键自定义菜单：替代 WebView2 自带的"复制图像"菜单 -->
+    <!-- 右键自定义菜单（设计 02）：图标 + 行式，替代 WebView2 自带的"复制图像"菜单 -->
     <div v-if="menu" class="pet-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
-      <button @click="menuSettings">进入设置</button>
-      <button @click="menuHidePet">关闭</button>
+      <button @click="menuSettings">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+        进入设置
+      </button>
+      <button @click="menuHidePet">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+        关闭
+      </button>
     </div>
 
     <div v-if="preview" class="preview-bar">
@@ -352,16 +363,29 @@ function menuHidePet() {
   /* 380 是目标宽度，但缩到 0.5x 时窗口只有 280 CSS px，
      不夹一下会被 .pet-root 的 overflow:hidden 裁掉 */
   max-width: min(380px, calc(100vw - 12px));
-  padding: 5px 9px;
+  padding: 7px 11px;
   background: #fff;
-  border: 1.5px solid rgba(255, 122, 89, 0.35);
+  border: none;
   border-radius: 14px;
-  box-shadow: 0 4px 14px rgba(90, 60, 40, 0.18);
-  color: #3d2e26;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
+  color: #1f2329;
   font-size: 12.5px;
   line-height: 1.5;
   text-align: center;
   word-break: break-word;
+}
+/* 气泡小尾巴（设计 01）：右下角指向宠物 */
+.bubble::after {
+  content: '';
+  position: absolute;
+  right: 22%;
+  bottom: -4px;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  transform: rotate(45deg);
+  border-radius: 2px;
+  box-shadow: 3px 3px 6px rgba(15, 23, 42, 0.06);
 }
 .agent-center {
   position: absolute;
@@ -379,11 +403,11 @@ function menuHidePet() {
   width: 30px;
   height: 30px;
   padding: 0;
-  border: 1px solid rgba(110, 100, 92, 0.18);
+  border: none;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.97);
-  box-shadow: 0 3px 10px rgba(60, 50, 45, 0.18);
-  color: #746860;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.14);
+  color: #747d87;
   cursor: pointer;
   pointer-events: auto;
 }
@@ -394,8 +418,8 @@ function menuHidePet() {
   left: calc(50% + 58px);
 }
 .agent-toggle:hover {
-  border-color: #9b8578;
   background: #fff;
+  color: #1f2329;
 }
 .agent-count {
   font-size: 12px;
@@ -414,23 +438,23 @@ function menuHidePet() {
 }
 .agent-message {
   padding: 7px 11px;
-  border: 1.5px solid;
+  border: 1px solid;
   border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(60, 50, 45, 0.16);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
   font-size: 12.5px;
   line-height: 1.45;
   text-align: left;
   word-break: break-word;
 }
 .agent-message.zcode {
-  color: #24547d;
-  background: rgba(235, 246, 255, 0.97);
-  border-color: #77b5e8;
+  color: #1d5bb8;
+  background: rgba(234, 243, 255, 0.97);
+  border-color: #bcd7fd;
 }
 .agent-message.claude {
-  color: #8a4a25;
-  background: rgba(255, 243, 232, 0.97);
-  border-color: #e8a16f;
+  color: #8a5a25;
+  background: rgba(253, 245, 235, 0.97);
+  border-color: #efd9bd;
 }
 .bubble-pop-enter-active,
 .bubble-pop-leave-active {
@@ -444,30 +468,36 @@ function menuHidePet() {
 .pet-menu {
   position: absolute;
   z-index: 20;
-  min-width: 92px;
+  min-width: 132px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 5px;
+  padding: 6px;
   background: #fff;
-  border: 1.5px solid rgba(255, 122, 89, 0.35);
-  border-radius: 12px;
-  box-shadow: 0 6px 20px rgba(90, 60, 40, 0.22);
+  border: none;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
 }
 .pet-menu button {
   border: none;
   background: transparent;
-  border-radius: 8px;
-  padding: 6px 10px;
+  border-radius: 9px;
+  padding: 7px 10px;
   font-size: 12.5px;
-  color: #3d2e26;
+  color: #1f2329;
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pet-menu button svg {
+  flex-shrink: 0;
+  color: #747d87;
 }
 .pet-menu button:hover {
-  background: #ffefe8;
-  color: #ff7a59;
+  background: #f2f3f5;
 }
 .approval {
   position: absolute;
@@ -475,55 +505,66 @@ function menuHidePet() {
   left: 50%;
   transform: translateX(-50%);
   top: 8px;
-  min-width: 200px;
-  padding: 8px 10px;
+  min-width: 220px;
+  max-width: min(340px, calc(100vw - 16px));
+  padding: 10px 12px;
   background: #fff;
-  border: 1.5px solid rgba(255, 122, 89, 0.55);
-  border-radius: 12px;
-  box-shadow: 0 6px 20px rgba(90, 60, 40, 0.25);
+  border: none;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
 }
 .approval-title {
   font-size: 12.5px;
-  color: #3d2e26;
+  font-weight: 700;
+  color: #1f2329;
   word-break: break-word;
 }
 .approval-detail {
-  margin-top: 2px;
+  margin-top: 3px;
   font-size: 11px;
-  color: #8c7a6e;
+  color: #747d87;
   word-break: break-all;
 }
 .approval-actions {
   display: flex;
   gap: 6px;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .approval-actions button {
   flex: 1;
-  border: 1px solid #e8d9cf;
-  background: #fff;
-  border-radius: 8px;
-  padding: 4px 8px;
+  border: none;
+  border-radius: 10px;
+  padding: 6px 8px;
   font-size: 12px;
   cursor: pointer;
-  color: #3d2e26;
 }
-.approval-actions button:hover {
-  border-color: #ff7a59;
-  color: #ff7a59;
+/* 允许 = 蓝色实心，拒绝 = 灰色（设计 02） */
+.approval-actions button.allow {
+  background: #0b6ef0;
+  color: #fff;
+}
+.approval-actions button.allow:hover {
+  background: #0a5fd0;
+}
+.approval-actions button.deny {
+  background: #f2f3f5;
+  color: #1f2329;
+}
+.approval-actions button.deny:hover {
+  background: #e9ebee;
 }
 .mock-window {
   position: absolute;
   background: rgba(255, 255, 255, 0.75);
-  border: 1.5px solid #e3d5ca;
+  border: 1.5px solid #e3e6ea;
   border-radius: 10px;
-  box-shadow: 0 8px 30px rgba(90, 60, 40, 0.12);
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.1);
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
   padding: 8px 12px;
   font-size: 12px;
-  color: #b3a294;
+  color: #9aa1aa;
   pointer-events: none;
 }
 .preview-bar {
@@ -533,27 +574,28 @@ function menuHidePet() {
   display: flex;
   gap: 6px;
   align-items: center;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.96);
   padding: 8px 10px;
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.14);
   z-index: 10;
 }
 .preview-title {
   font-size: 12px;
-  color: #8c7a6e;
+  color: #747d87;
   margin-right: 2px;
 }
 .preview-bar button {
-  border: 1px solid #e8d9cf;
-  background: #fff;
-  border-radius: 8px;
-  padding: 4px 9px;
+  border: none;
+  background: #f2f3f5;
+  border-radius: 9px;
+  padding: 5px 10px;
   font-size: 12px;
   cursor: pointer;
+  color: #1f2329;
 }
 .preview-bar button:hover {
-  border-color: #ff7a59;
-  color: #ff7a59;
+  background: #eaf3ff;
+  color: #0b6ef0;
 }
 </style>

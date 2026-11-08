@@ -1,6 +1,6 @@
 // 记忆系统单测（M5）：memory.md 解析/序列化、bigram 召回、滚动摘要
 import { describe, expect, it } from 'vitest'
-import { MemoryStore, bigrams, relevanceScore } from './Memory'
+import { MemoryStore, bigramCoverage, bigrams, relevanceScore } from './Memory'
 import { parseMemoryMd, serializeMemoryMd, type MemorySections } from './memoryMd'
 import { DEFAULT_MEMORY } from '../lib/tauri'
 
@@ -21,6 +21,12 @@ describe('bigram 相关性', () => {
   it('相关命中、无关为零', () => {
     expect(relevanceScore('我喜欢喝奶茶', '用户喜欢喝奶茶')).toBeGreaterThan(0)
     expect(relevanceScore('量子物理', '我喜欢喝奶茶')).toBe(0)
+  })
+  it('bigramCoverage 与 relevanceScore 等价（复用算好的 query 集合）', () => {
+    const q = '我喜欢喝奶茶'
+    expect(bigramCoverage(bigrams(q), '用户喜欢喝奶茶')).toBe(relevanceScore(q, '用户喜欢喝奶茶'))
+    expect(bigramCoverage(bigrams(q), '量子物理')).toBe(0)
+    expect(bigramCoverage(new Set(), '任意文本')).toBe(0)
   })
 })
 

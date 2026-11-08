@@ -69,6 +69,7 @@ fn main() {
             window::hide_window,
             window::get_window_info,
             ai::ai_chat,
+            ai::ai_embed,
             tts::tts_speak,
             tray::toggle_paused,
             tray::set_tray_agentsync,
@@ -98,6 +99,14 @@ fn main() {
         })
         .setup(|app| {
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
+            // 托盘/暂停状态最先 manage：前端页面加载后可能立刻 invoke
+            // set_tray_agentsync / toggle_paused，若晚于窗口消息泵就会 state() panic
+            // （实机复现：启动即 abort "state() called before manage()"）
+            app.manage(tray::PauseState(std::sync::Mutex::new(false)));
+            app.manage(tray::TrayUi {
+                pause_item: std::sync::Mutex::new(None),
+                agentsync_item: std::sync::Mutex::new(None),
+            });
             // 桥接状态 + 本地 HTTP 桥（附录 A.4，M5）
             app.manage(server::BridgeState {
                 status: std::sync::Mutex::new(serde_json::Value::Null),
